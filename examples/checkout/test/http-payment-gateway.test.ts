@@ -6,6 +6,7 @@ import { after, before, beforeEach, describe, it } from 'node:test';
 import { HttpPaymentGateway } from '../src/payments/http-payment-gateway';
 import type { PaymentRequest } from '../src/payments/payment-gateway';
 import { PaymentGatewayError } from '../src/payments/payment-gateway';
+import { RequestContext } from '../src/observability/request-context';
 
 const payment: PaymentRequest = {
   merchantReference: randomUUID(),
@@ -21,18 +22,26 @@ const valid = {
 
 void describe('HTTP payment gateway with a real HTTP server', () => {
   let baseUrl: string;
+  const context = new RequestContext();
   let handler: (request: IncomingMessage, response: ServerResponse) => void;
   let calls: Array<{
     method: string | undefined;
     path: string | undefined;
     body: unknown;
+    correlationId: string | undefined;
   }> = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      calls.push({ method: request.method, path: request.url, body });
+      calls.push({
+        method: request.method,
+        path: request.url,
+        body,
+        correlationId: request.headers['x-correlation-id'] as
+          string | undefined,
+      });
       handler(request, response);
     });
   });
@@ -58,7 +67,7 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
     );
   });
   function gateway(timeoutMs = 2000): HttpPaymentGateway {
-    return new HttpPaymentGateway({ baseUrl, timeoutMs }, fetch);
+    return new HttpPaymentGateway({ baseUrl, timeoutMs }, fetch, context);
   }
   async function fails(
     kind: PaymentGatewayError['kind'],
@@ -73,10 +82,41 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
   }
 
   void it('POSTs only the persisted identity, amount and currency and validates the confirmation', async () => {
-    assert.deepEqual(await gateway().createCharge(payment), valid);
+    assert.deepEqual(
+      await context.run('gateway-test-1', () =>
+        gateway().createCharge(payment),
+      ),
+      valid,
+    );
     assert.deepEqual(calls, [
-      { method: 'POST', path: '/api/charges', body: payment },
+      {
+        method: 'POST',
+        path: '/api/charges',
+        body: payment,
+        correlationId: 'gateway-test-1',
+      },
     ]);
+  });
+  void it('generates an outbound UUID when called outside an incoming request', async () => {
+    await gateway().createCharge(payment);
+    assert.match(calls[0]?.correlationId ?? '', /^[0-9a-f-]{36}$/);
+    assert.equal(context.getId(), undefined);
+  });
+  void it('propagates concurrent contexts without mixing identifiers', async () => {
+    const ids = Array.from(
+      { length: 20 },
+      (_value, index) => 'gateway-concurrent-' + index,
+    );
+    const adapter = gateway();
+    await Promise.all(
+      ids.map((id) => context.run(id, () => adapter.createCharge(payment))),
+    );
+    assert.deepEqual(
+      new Set(calls.map((call) => call.correlationId)),
+      new Set(ids),
+    );
+    assert.equal(calls.length, ids.length);
+    assert.equal(context.getId(), undefined);
   });
   for (const status of [400, 401, 404, 409, 429, 500, 503]) {
     void it('reports HTTP ' + status + ' without retrying', async () => {

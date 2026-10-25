@@ -15,7 +15,7 @@ export class ChargesService {
   async findById(id: string): Promise<ChargeResponseDto> {
     const charge = await this.repository.findById(id);
     if (!charge) {
-      throw new NotFoundException('Charge not found.');
+      throw new NotFoundException({ code: 'CHARGE_NOT_FOUND' });
     }
     return new ChargeResponseDto(charge);
   }

@@ -34,14 +34,14 @@ export class OrdersService {
   async findById(id: string): Promise<OrderResponseDto> {
     const order = await this.repository.findById(id);
     if (!order) {
-      throw new NotFoundException('Order not found.');
+      throw new NotFoundException({ code: 'ORDER_NOT_FOUND' });
     }
     return new OrderResponseDto(order);
   }
 
   async pay(id: string): Promise<OrderResponseDto> {
     const order = await this.repository.findById(id);
-    if (!order) throw new NotFoundException('Order not found.');
+    if (!order) throw new NotFoundException({ code: 'ORDER_NOT_FOUND' });
     if (order.status === 'PAID') return new OrderResponseDto(order);
 
     const request: PaymentRequest = {

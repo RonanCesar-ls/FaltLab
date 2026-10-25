@@ -1,4 +1,8 @@
 import 'reflect-metadata';
+import assert from 'node:assert/strict';
+import { ObservabilityModule } from '../src/observability/observability.module';
+import { configureHttpApplication } from '../src/observability/configure-http';
+import { JSON_LOG_SINK } from '../src/observability/json-logger';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Server } from 'node:http';
@@ -23,10 +27,15 @@ void describe('payment-provider health endpoints', () => {
 
   before(async () => {
     const module = await Test.createTestingModule({
+      imports: [ObservabilityModule],
       controllers: [HealthController],
       providers: [{ provide: DatabaseService, useValue: database }],
-    }).compile();
+    })
+      .overrideProvider(JSON_LOG_SINK)
+      .useValue(() => undefined)
+      .compile();
     app = module.createNestApplication();
+    configureHttpApplication(app);
     await app.init();
   });
 
@@ -54,11 +63,17 @@ void describe('payment-provider health endpoints', () => {
     await request(app.getHttpServer() as Server)
       .get('/health/ready')
       .expect(503)
-      .expect({
-        status: 'unavailable',
-        service: 'payment-provider',
-        database: 'unavailable',
-      });
+      .expect(
+        (response: { body: unknown; headers: Record<string, unknown> }) => {
+          const body = response.body as Record<string, unknown>;
+          assert.deepEqual(body, {
+            statusCode: 503,
+            code: 'DATABASE_UNAVAILABLE',
+            message: 'The service database is unavailable.',
+            correlationId: response.headers['x-correlation-id'],
+          });
+        },
+      );
     await request(app.getHttpServer() as Server)
       .get('/health')
       .expect(200)

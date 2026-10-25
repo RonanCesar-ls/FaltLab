@@ -4,6 +4,11 @@ import type {
   PaymentRequest,
 } from './payment-gateway';
 import { isPaymentConfirmation, PaymentGatewayError } from './payment-gateway';
+import { randomUUID } from 'node:crypto';
+import {
+  CORRELATION_HEADER,
+  RequestContext,
+} from '../observability/request-context';
 
 export interface HttpPaymentGatewayOptions {
   baseUrl: string;
@@ -16,6 +21,7 @@ export class HttpPaymentGateway implements PaymentGateway {
   constructor(
     private readonly options: HttpPaymentGatewayOptions,
     private readonly http: typeof fetch,
+    private readonly context: RequestContext,
   ) {
     this.chargesUrl = new URL(
       'charges',
@@ -31,6 +37,7 @@ export class HttpPaymentGateway implements PaymentGateway {
         headers: {
           'content-type': 'application/json',
           accept: 'application/json',
+          [CORRELATION_HEADER]: this.context.getId() ?? randomUUID(),
         },
         body: JSON.stringify(request),
         redirect: 'manual',

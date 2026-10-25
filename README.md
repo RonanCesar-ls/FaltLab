@@ -352,12 +352,82 @@ The charges module has its own controller, DTOs, service and repository and uses
 only the provider's existing pg pool. Creating a charge directly does not update
 any order; checkout performs that update only in its payment use case.
 
+## Errors, correlation and request logs
+
+Both services return the same error shape:
+
+```json
+{
+  "statusCode": 400,
+  "code": "BAD_REQUEST",
+  "message": "Invalid request.",
+  "correlationId": "example-request-1"
+}
+```
+
+HTTP statuses documented above are unchanged. DTO/UUID/body validation uses
+BAD_REQUEST (400), unknown routes use NOT_FOUND (404), missing orders and charges
+use ORDER_NOT_FOUND / CHARGE_NOT_FOUND (404), database readiness failures use
+DATABASE_UNAVAILABLE (503), and unexpected internal or SQL failures use
+INTERNAL_SERVER_ERROR (500). Oversized bodies use PAYLOAD_TOO_LARGE (413).
+Payment failure codes and their 502/503/504 statuses remain as documented.
+Messages are safe public strings, not serialized exception messages. Responses
+never contain stack traces, SQL text, connection strings or credentials.
+
+Every application HTTP response includes `X-Correlation-Id`, including success,
+validation failures, unknown routes, malformed JSON and body-size errors. The
+error body contains the same value. Requests can supply one identifier matching
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`: 1..64 ASCII characters, beginning with a letter
+or digit, followed by letters, digits, dot, underscore or hyphen. Values are
+preserved exactly. Missing values generate a new UUID. Empty, malformed,
+overlength or repeated values return 400 / INVALID_CORRELATION_ID with a freshly
+generated safe UUID; the invalid value is neither echoed nor logged. Protocol
+rejections by the HTTP server before a request reaches the application are outside
+this application-level contract.
+
+Use opaque, non-sensitive identifiers; correlation IDs are not authentication or
+idempotency keys. Checkout forwards the same ID to the provider's POST /charges,
+and both services use it in their response headers and request logs. Context is
+stored in AsyncLocalStorage.run rather than a mutable global request variable.
+Concurrent requests keep their own ID across awaits and HTTP calls.
+
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:3001/health' -Headers @{ 'X-Correlation-Id' = 'local-check-1' }
+Invoke-RestMethod -Method Post -Uri "http://localhost:3001/orders/$($order.id)/pay" -Headers @{ 'X-Correlation-Id' = 'payment-check-1' }
+```
+
+Application processes write one JSON object per log line to stdout. Request
+events are request.started, request.completed and, for failures, request.failed.
+They include timestamp, service, level and correlationId. Start/completion records
+include the HTTP method and a fixed route template, such as /orders/:id/pay;
+completion also includes statusCode, durationMs and finished/aborted outcome.
+Failures include only a safe status and code. Unknown paths are logged as
+`<unmatched>`. Request bodies, query values, raw paths/IDs, cookies, authorization
+headers, raw exceptions, stack traces, SQL and credentials are not logged.
+
+Database idle-connection failures, startup failures and migration failures also
+use safe structured events. Background/startup/migration events have a null
+correlationId because they do not belong to an HTTP request; an old request ID is
+not reused. Framework logger arguments are sanitized rather than serialized.
+Migration commands log started/completed/failed events and exit nonzero on error
+without printing SQL or connection details. pnpm/Compose/test-runner command
+output is separate from application JSON logs.
+
+```sh
+docker compose logs -f --no-log-prefix checkout payment-provider
+```
+
+In-process HTTP tests use configureHttpApplication before app.init/listen, just
+like each bootstrap, so correlation precedes Nest's JSON body parser. The global
+exception filter is registered by each service's ObservabilityModule. The shared
+error contract does not introduce the FaultLab engine or change payment semantics.
+
 ## Health and database lifecycle
 
-| Endpoint          | Success                                            | Database unavailable                               |
-| ----------------- | -------------------------------------------------- | -------------------------------------------------- |
-| GET /health       | HTTP 200, status ok and service identity           | Still HTTP 200                                     |
-| GET /health/ready | HTTP 200, status ok, service identity, database ok | HTTP 503, status unavailable, database unavailable |
+| Endpoint          | Success                                            | Database unavailable                                    |
+| ----------------- | -------------------------------------------------- | ------------------------------------------------------- |
+| GET /health       | HTTP 200, status ok and service identity           | Still HTTP 200                                          |
+| GET /health/ready | HTTP 200, status ok, service identity, database ok | HTTP 503, DATABASE_UNAVAILABLE error with correlationId |
 
 For example:
 
@@ -417,7 +487,7 @@ local Docker environment.
 | pnpm format           | Apply Prettier formatting                                                    |
 | pnpm format:check     | Check formatting without changing files                                      |
 | pnpm typecheck        | Check strict TypeScript types, including tests                               |
-| pnpm test             | Run environment and HTTP health tests with a database stub                   |
+| pnpm test             | Run environment, HTTP, gateway and observability tests without Docker        |
 | pnpm test:integration | Verify real PostgreSQL identity, parameters, readiness and pool shutdown     |
 | pnpm test:orders      | Provision an isolated PostgreSQL and test orders, constraints and migrations |
 | pnpm test:charges     | Provision an isolated provider PostgreSQL and test charges and persistence   |
@@ -469,6 +539,10 @@ configured service databases; it does not run the disposable business suites.
 the payment use case through injected gateway/repository doubles without Docker.
 These tests verify confirmation matching, controlled failures, exactly one HTTP
 attempt, redirect rejection and no local write before a valid confirmation.
+Observability tests in both services check error envelopes and privacy, generated
+and supplied IDs, invalid/duplicate headers, malformed JSON, body-size limits,
+structured start/end/failure events, and concurrent context isolation. Gateway
+tests additionally check propagation across concurrent outgoing HTTP calls.
 
 The charges suite also provisions its own temporary PostgreSQL automatically:
 

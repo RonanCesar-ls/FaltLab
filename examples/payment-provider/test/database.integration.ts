@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { configureHttpApplication } from '../src/observability/configure-http';
+import { JSON_LOG_SINK } from '../src/observability/json-logger';
 import assert from 'node:assert/strict';
 import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -16,8 +18,12 @@ void describe('payment-provider PostgreSQL integration (requires its running dat
   before(async () => {
     const module = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(JSON_LOG_SINK)
+      .useValue(() => undefined)
+      .compile();
     app = module.createNestApplication();
+    configureHttpApplication(app);
     await app.init();
     database = app.get(DatabaseService);
   });

@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { configureHttpApplication } from '../src/observability/configure-http';
+import { JSON_LOG_SINK } from '../src/observability/json-logger';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -24,12 +26,14 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     | 'invalid_confirmation' = 'valid';
   let calls: unknown[] = [];
   let chargeIds: string[] = [];
+  let correlationIds: unknown[] = [];
   const provider = createServer((incoming, response) => {
     const chunks: Buffer[] = [];
     incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
     incoming.on('end', () => {
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       calls.push(body);
+      correlationIds.push(incoming.headers['x-correlation-id']);
       assert.equal(incoming.method, 'POST');
       assert.equal(incoming.url, '/charges');
       if (mode === 'unavailable') {
@@ -80,8 +84,12 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(JSON_LOG_SINK)
+      .useValue(() => undefined)
+      .compile();
     app = module.createNestApplication({ logger: false });
+    configureHttpApplication(app);
     await app.init();
     database = app.get(DatabaseService);
     server = app.getHttpServer() as Server;
@@ -90,6 +98,7 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     mode = 'valid';
     calls = [];
     chargeIds = [];
+    correlationIds = [];
   });
   after(async () => {
     await app?.close();
@@ -111,7 +120,10 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     const order = await create();
     const response = await request(server)
       .post('/orders/' + order.id + '/pay')
+      .set('X-Correlation-Id', 'pay-postgres-1')
       .expect(200);
+    assert.equal(response.headers['x-correlation-id'], 'pay-postgres-1');
+    assert.deepEqual(correlationIds, ['pay-postgres-1']);
     const paid = response.body as OrderResponseDto;
     assert.deepEqual(calls, [
       {

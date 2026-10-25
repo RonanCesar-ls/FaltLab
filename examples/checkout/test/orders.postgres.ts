@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { configureHttpApplication } from '../src/observability/configure-http';
+import { JSON_LOG_SINK } from '../src/observability/json-logger';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
@@ -54,8 +56,12 @@ void describe('Orders HTTP and PostgreSQL constraints (isolated database only)',
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(JSON_LOG_SINK)
+      .useValue(() => undefined)
+      .compile();
     app = module.createNestApplication();
+    configureHttpApplication(app);
     await app.init();
     database = app.get(DatabaseService);
     server = app.getHttpServer() as Server;

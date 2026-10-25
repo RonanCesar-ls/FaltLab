@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { Environment } from '../environment';
 import { HttpPaymentGateway } from './http-payment-gateway';
 import { PAYMENT_GATEWAY, PAYMENT_HTTP_CLIENT } from './payment-gateway';
+import { RequestContext } from '../observability/request-context';
 
 @Module({
   imports: [ConfigModule],
@@ -13,12 +14,17 @@ import { PAYMENT_GATEWAY, PAYMENT_HTTP_CLIENT } from './payment-gateway';
     },
     {
       provide: PAYMENT_GATEWAY,
-      inject: [ConfigService, PAYMENT_HTTP_CLIENT],
+      inject: [ConfigService, PAYMENT_HTTP_CLIENT, RequestContext],
       useFactory: (
         config: ConfigService<Environment, true>,
         http: typeof fetch,
+        context: RequestContext,
       ): HttpPaymentGateway =>
-        new HttpPaymentGateway(config.get('payment', { infer: true }), http),
+        new HttpPaymentGateway(
+          config.get('payment', { infer: true }),
+          http,
+          context,
+        ),
     },
   ],
   exports: [PAYMENT_GATEWAY],

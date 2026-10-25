@@ -21,7 +21,7 @@ export class HealthController {
       return { status: 'ok', service: 'checkout', database: 'ok' };
     } catch {
       throw new ServiceUnavailableException({
-        status: 'unavailable',
+        code: 'DATABASE_UNAVAILABLE',
         service: 'checkout',
         database: 'unavailable',
       });
