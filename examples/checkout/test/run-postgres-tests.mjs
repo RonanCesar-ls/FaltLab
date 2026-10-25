@@ -77,8 +77,10 @@ try {
   node(
     [
       '--test',
+      '--test-concurrency=1',
       'dist-test/test/database.integration.js',
       'dist-test/test/orders.postgres.js',
+      'dist-test/test/pay-order.postgres.js',
     ],
     env,
   );

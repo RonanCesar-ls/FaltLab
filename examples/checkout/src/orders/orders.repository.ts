@@ -37,4 +37,15 @@ export class OrdersRepository {
     );
     return result.rows[0] ?? null;
   }
+
+  async markPaid(id: string, providerChargeId: string): Promise<Order> {
+    const result = await this.database.query<Order>(
+      `UPDATE checkout.orders SET status = 'PAID', provider_charge_id = $2::uuid,
+       updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid RETURNING ${ORDER_COLUMNS}`,
+      [id, providerChargeId],
+    );
+    const order = result.rows[0];
+    if (!order) throw new Error('PostgreSQL did not return the updated order.');
+    return order;
+  }
 }

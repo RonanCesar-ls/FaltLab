@@ -14,6 +14,10 @@ void describe('checkout environment', () => {
     const environment = validateEnvironment(credentials);
     assert.equal(environment.NODE_ENV, 'development');
     assert.equal(environment.PORT, 3001);
+    assert.deepEqual(environment.payment, {
+      baseUrl: 'http://127.0.0.1:3002/',
+      timeoutMs: 2000,
+    });
     assert.deepEqual(environment.database, {
       host: '127.0.0.1',
       port: 5433,
@@ -73,6 +77,7 @@ void describe('checkout environment', () => {
       'PGPOOL_MAX',
       'PGCONNECT_TIMEOUT_MS',
       'PGQUERY_TIMEOUT_MS',
+      'PAYMENT_PROVIDER_TIMEOUT_MS',
     ]) {
       for (const value of [
         '',
@@ -90,6 +95,35 @@ void describe('checkout environment', () => {
           new RegExp(key),
         );
       }
+    }
+  });
+
+  void it('accepts an HTTP(S) provider base path and explicit timeout', () => {
+    assert.deepEqual(
+      validateEnvironment({
+        ...credentials,
+        PAYMENT_PROVIDER_URL: 'https://payments.example.test/api',
+        PAYMENT_PROVIDER_TIMEOUT_MS: '1500',
+      }).payment,
+      { baseUrl: 'https://payments.example.test/api/', timeoutMs: 1500 },
+    );
+  });
+
+  void it('rejects invalid provider URLs and embedded credentials', () => {
+    for (const url of [
+      '',
+      123,
+      'not-a-url',
+      'ftp://host',
+      'http://user:secret@host',
+      'http://host?token=secret',
+      'http://host/#secret',
+    ]) {
+      assert.throws(
+        () =>
+          validateEnvironment({ ...credentials, PAYMENT_PROVIDER_URL: url }),
+        /PAYMENT_PROVIDER_URL/,
+      );
     }
   });
 });

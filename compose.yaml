@@ -57,6 +57,8 @@ services:
       NODE_ENV: production
       PORT: '3001'
       PGHOST: checkout-db
+      PAYMENT_PROVIDER_URL: http://payment-provider:3002
+      PAYMENT_PROVIDER_TIMEOUT_MS: ${PAYMENT_PROVIDER_TIMEOUT_MS:-2000}
       PGPORT: '5432'
       PGDATABASE: ${CHECKOUT_DB_NAME:-checkout}
       PGUSER: ${CHECKOUT_DB_USER:-checkout_app}
@@ -68,6 +70,7 @@ services:
       - '127.0.0.1:${CHECKOUT_PORT:-3001}:3001'
     networks:
       - checkout
+      - payments
     depends_on:
       checkout-db:
         condition: service_healthy
@@ -93,6 +96,7 @@ services:
       - '127.0.0.1:${PAYMENT_PROVIDER_PORT:-3002}:3002'
     networks:
       - payment-provider
+      - payments
     depends_on:
       payment-provider-db:
         condition: service_healthy
@@ -100,6 +104,7 @@ services:
 networks:
   checkout:
   payment-provider:
+  payments:
 
 volumes:
   checkout-data:

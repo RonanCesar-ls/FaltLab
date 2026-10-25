@@ -4,8 +4,8 @@ FaultLab is a TypeScript/pnpm monorepo for future fault-injection experiments.
 It currently provides two independent NestJS services, isolated PostgreSQL
 instances, versioned migrations, and a local Docker environment. Checkout supports
 order creation and lookup. The payment provider independently creates and queries
-fictitious successful charges. The services are not connected; order payment,
-the fault engine, CLI, and scenario runner are not implemented.
+fictitious successful charges. Checkout can pay an order through the provider's
+HTTP API. The fault engine, CLI, and scenario runner are not implemented.
 
 ## Requirements
 
@@ -59,10 +59,12 @@ All published ports bind to 127.0.0.1. Override host ports with CHECKOUT_PORT,
 PAYMENT_PROVIDER_PORT, CHECKOUT_DB_PORT and PAYMENT_PROVIDER_DB_PORT in the root
 .env. Containers continue to use their internal ports (3001/3002 and 5432).
 
-Each application is attached only to its own database network and receives only
-its own PGHOST, PGPORT, PGDATABASE, PGUSER and PGPASSWORD. The databases have
-separate roles, data volumes and PostgreSQL processes. No shared database network
-is created.
+Each application receives only its own PGHOST, PGPORT, PGDATABASE, PGUSER and
+PGPASSWORD. The databases have separate roles, volumes, PostgreSQL processes and
+private networks. Only the two application containers join the additional
+payments network for HTTP traffic. Neither database joins that network; checkout
+does not receive provider database credentials, and the provider does not receive
+checkout database credentials.
 
 ```sh
 docker compose logs -f checkout payment-provider
@@ -186,7 +188,7 @@ are equal and are returned as ISO 8601 UTC strings.
 
 `GET /orders/:id` returns HTTP 200 with the same order representation, HTTP 400
 for a malformed UUID, or HTTP 404 for a valid UUID that does not exist. This is a
-single-order lookup; no order list or update route is implemented.
+single-order lookup; there is no order list or general-purpose update route.
 
 Example in PowerShell:
 
@@ -200,7 +202,80 @@ Repository queries use the existing pg pool and bound parameters. PostgreSQL
 stores UUID identifiers, integer amounts and timestamptz dates, with NOT NULL,
 primary key, amount range, BRL-only and status constraints. A PENDING_PAYMENT row
 must have a null providerChargeId; a PAID row must have a non-null UUID. The API
-only creates PENDING_PAYMENT rows. Checkout has no order-payment endpoint or provider call.
+only creates PENDING_PAYMENT rows. Payment is a separate operation described below.
+
+## Pay an order through the provider
+
+Run both services and apply both services' existing migrations. No new migration
+is needed for the payment operation. For Compose:
+
+```sh
+docker compose up -d --build --wait
+docker compose exec checkout node dist/migrate.js up
+docker compose exec payment-provider node dist/migrate.js up
+```
+
+`POST /orders/:id/pay` returns HTTP 200 with the updated order. It accepts no body
+or an empty JSON object `{}`. Any body field, including amountCents, currency,
+merchantReference, status and providerChargeId, returns HTTP 400. Malformed order
+UUIDs return 400, and nonexistent orders return 404 without calling the provider.
+
+```powershell
+$order = Invoke-RestMethod -Method Post -Uri 'http://localhost:3001/orders' -ContentType 'application/json' -Body '{"amountCents":12990,"currency":"BRL"}'
+$paid = Invoke-RestMethod -Method Post -Uri "http://localhost:3001/orders/$($order.id)/pay"
+$paid
+```
+
+Checkout reads the persisted order and sends only its ID as merchantReference,
+its amountCents and its currency to `POST /charges`. The PaymentGateway interface
+and PAYMENT_GATEWAY injection token isolate this operation from the HTTP adapter;
+PAYMENT_HTTP_CLIENT supplies the HTTP transport. There are no direct provider
+database queries from checkout.
+
+The adapter requires HTTP 201 and a JSON confirmation with a UUID charge ID,
+matching merchantReference, amount and currency, SUCCEEDED status and a valid
+timezone-aware creation timestamp. Only a valid confirmation permits a single
+atomic PostgreSQL update of status to PAID, providerChargeId and updatedAt.
+createdAt, amountCents and currency stay unchanged. The endpoint awaits that
+update before returning. There are no automatic retries or redirect following.
+
+| Failure                                                         | HTTP status | Response code                      |
+| --------------------------------------------------------------- | ----------- | ---------------------------------- |
+| Provider unavailable / connection failure                       | 503         | PAYMENT_PROVIDER_UNAVAILABLE       |
+| Deadline exceeded, including response-body reads                | 504         | PAYMENT_PROVIDER_TIMEOUT           |
+| Invalid JSON, contract mismatch or unexpected successful status | 502         | PAYMENT_PROVIDER_INVALID_RESPONSE  |
+| Non-success HTTP response, including redirects                  | 502         | PAYMENT_PROVIDER_HTTP_ERROR        |
+| Unable to save a valid confirmation locally                     | 503         | PAYMENT_CONFIRMATION_NOT_PERSISTED |
+
+Provider failure responses contain controlled messages and codes; raw upstream
+responses and connection details are not exposed. A provider failure does not
+write payment status or a charge ID to the pending order. A failed local update
+also leaves its previous database state intact.
+
+**Communication failure does not prove that no charge was created.** The provider
+may persist a charge before its confirmation is lost or times out. Checkout then
+remains pending despite that charge existing. Similarly, a confirmed charge can
+exist when checkout cannot persist the local update. A subsequent payment attempt
+can create another charge; this stage has no distributed idempotency, automatic
+reconciliation, retries, compensation or exactly-once guarantee.
+
+After a completed successful payment, a sequential call reads PAID from the
+database and returns that state without another HTTP request or database update,
+even if the provider is now unavailable. **This sequential protection is not safe
+against concurrent payments.** Two requests can both observe PENDING_PAYMENT and
+create separate charges. Concurrent local updates can retain only one of their
+charge IDs. There is no lock spanning the HTTP request or distributed transaction.
+
+For host services, checkout defaults to `http://127.0.0.1:3002`; set
+PAYMENT_PROVIDER_URL in examples/checkout/.env when the provider is elsewhere.
+Compose sets it to `http://payment-provider:3002` through service DNS. The URL must
+use HTTP(S), with no embedded credentials, query or fragment; an optional base
+path is supported. PAYMENT_PROVIDER_TIMEOUT_MS defaults to 2000 and must be an
+integer from 1 through 60000. Set it in the checkout .env for host mode, or the
+root .env for Compose. The deadline covers connection, headers and response body.
+
+Checkout's process health and database readiness remain independent of provider
+availability. The provider is deliberately not a checkout startup dependency.
 
 ## Charges API (payment provider only)
 
@@ -274,7 +349,8 @@ Invoke-RestMethod -Uri "http://localhost:3002/charges?merchantReference=$referen
 ```
 
 The charges module has its own controller, DTOs, service and repository and uses
-only the provider's existing pg pool. Creating a charge does not update any order.
+only the provider's existing pg pool. Creating a charge directly does not update
+any order; checkout performs that update only in its payment use case.
 
 ## Health and database lifecycle
 
@@ -323,6 +399,10 @@ startup validation; credentials have no code defaults.
 | PGPOOL_MAX           | Maximum pool size, 1..100                   | 10                  |
 | PGCONNECT_TIMEOUT_MS | Connection/acquisition timeout, 1..60000 ms | 2000                |
 | PGQUERY_TIMEOUT_MS   | Client/server query timeout, 1..60000 ms    | 3000                |
+
+Checkout also validates PAYMENT_PROVIDER_URL and PAYMENT_PROVIDER_TIMEOUT_MS, as
+described in the payment section. The provider's environment does not require
+either checkout database credentials or checkout HTTP configuration.
 
 Idle connections expire after ten seconds. These PostgreSQL settings target the
 local Docker environment.
@@ -377,9 +457,18 @@ tests are not skipped.
 The suite covers creation and persisted lookup, both amount boundaries, UUID
 400/404 cases, missing/unknown/server-controlled fields, numeric strings,
 fractions, invalid currencies, direct SQL constraint violations and timestamp
-types. Test fixtures for the PAID constraint do not implement a payment workflow.
+types. It also runs payment HTTP tests with real PostgreSQL and a local HTTP
+provider fixture: successful payment, persisted charge ID, sequential reuse,
+body rejection, unavailable connections, header/body timeouts, invalid responses,
+HTTP errors and local update failures. Its test files run sequentially against
+the disposable database so row-count assertions remain isolated.
 `pnpm test:integration` remains the separate infrastructure suite against the
 configured service databases; it does not run the disposable business suites.
+
+`pnpm test` additionally runs the HTTP adapter against a local HTTP server and
+the payment use case through injected gateway/repository doubles without Docker.
+These tests verify confirmation matching, controlled failures, exactly one HTTP
+attempt, redirect rejection and no local write before a valid confirmation.
 
 The charges suite also provisions its own temporary PostgreSQL automatically:
 

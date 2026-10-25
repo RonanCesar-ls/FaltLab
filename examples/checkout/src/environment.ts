@@ -4,6 +4,7 @@ export interface Environment {
   NODE_ENV: 'development' | 'test' | 'production';
   PORT: number;
   database: PoolConfig & { database: string; user: string };
+  payment: { baseUrl: string; timeoutMs: number };
 }
 
 function integer(
@@ -47,9 +48,33 @@ export function validateEnvironment(
     throw new Error('NODE_ENV must be development, test, or production.');
   }
   const queryTimeout = integer(config, 'PGQUERY_TIMEOUT_MS', 3000, 60000);
+  const rawProviderUrl =
+    config['PAYMENT_PROVIDER_URL'] ?? 'http://127.0.0.1:3002';
+  let providerUrl: URL;
+  try {
+    if (typeof rawProviderUrl !== 'string') throw new Error();
+    providerUrl = new URL(rawProviderUrl);
+    if (
+      !['http:', 'https:'].includes(providerUrl.protocol) ||
+      providerUrl.username ||
+      providerUrl.password ||
+      providerUrl.search ||
+      providerUrl.hash
+    )
+      throw new Error();
+  } catch {
+    throw new Error(
+      'PAYMENT_PROVIDER_URL must be an HTTP(S) base URL without credentials, query, or fragment.',
+    );
+  }
+  if (!providerUrl.pathname.endsWith('/')) providerUrl.pathname += '/';
   return {
     NODE_ENV: nodeEnv,
     PORT: integer(config, 'PORT', 3001, 65535),
+    payment: {
+      baseUrl: providerUrl.toString(),
+      timeoutMs: integer(config, 'PAYMENT_PROVIDER_TIMEOUT_MS', 2000, 60000),
+    },
     database: {
       host: required(config, 'PGHOST'),
       port: integer(config, 'PGPORT', 5433, 65535),
