@@ -1,0 +1,106 @@
+name: faultlab
+
+services:
+  checkout-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${CHECKOUT_DB_NAME:-checkout}
+      POSTGRES_USER: ${CHECKOUT_DB_USER:-checkout_app}
+      POSTGRES_PASSWORD: ${CHECKOUT_DB_PASSWORD:?Set CHECKOUT_DB_PASSWORD in .env}
+    ports:
+      - '127.0.0.1:${CHECKOUT_DB_PORT:-5433}:5432'
+    volumes:
+      - checkout-data:/var/lib/postgresql/data
+    networks:
+      - checkout
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  payment-provider-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${PAYMENT_PROVIDER_DB_NAME:-payment_provider}
+      POSTGRES_USER: ${PAYMENT_PROVIDER_DB_USER:-payment_provider_app}
+      POSTGRES_PASSWORD: ${PAYMENT_PROVIDER_DB_PASSWORD:?Set PAYMENT_PROVIDER_DB_PASSWORD in .env}
+    ports:
+      - '127.0.0.1:${PAYMENT_PROVIDER_DB_PORT:-5434}:5432'
+    volumes:
+      - payment-provider-data:/var/lib/postgresql/data
+    networks:
+      - payment-provider
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  checkout:
+    build:
+      context: .
+      dockerfile: examples/checkout/Dockerfile
+    init: true
+    stop_grace_period: 10s
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      PGHOST: checkout-db
+      PGPORT: '5432'
+      PGDATABASE: ${CHECKOUT_DB_NAME:-checkout}
+      PGUSER: ${CHECKOUT_DB_USER:-checkout_app}
+      PGPASSWORD: ${CHECKOUT_DB_PASSWORD:?Set CHECKOUT_DB_PASSWORD in .env}
+      PGPOOL_MAX: '10'
+      PGCONNECT_TIMEOUT_MS: '2000'
+      PGQUERY_TIMEOUT_MS: '3000'
+    ports:
+      - '127.0.0.1:${CHECKOUT_PORT:-3001}:3001'
+    networks:
+      - checkout
+    depends_on:
+      checkout-db:
+        condition: service_healthy
+
+  payment-provider:
+    build:
+      context: .
+      dockerfile: examples/payment-provider/Dockerfile
+    init: true
+    stop_grace_period: 10s
+    environment:
+      NODE_ENV: production
+      PORT: '3002'
+      PGHOST: payment-provider-db
+      PGPORT: '5432'
+      PGDATABASE: ${PAYMENT_PROVIDER_DB_NAME:-payment_provider}
+      PGUSER: ${PAYMENT_PROVIDER_DB_USER:-payment_provider_app}
+      PGPASSWORD: ${PAYMENT_PROVIDER_DB_PASSWORD:?Set PAYMENT_PROVIDER_DB_PASSWORD in .env}
+      PGPOOL_MAX: '10'
+      PGCONNECT_TIMEOUT_MS: '2000'
+      PGQUERY_TIMEOUT_MS: '3000'
+    ports:
+      - '127.0.0.1:${PAYMENT_PROVIDER_PORT:-3002}:3002'
+    networks:
+      - payment-provider
+    depends_on:
+      payment-provider-db:
+        condition: service_healthy
+
+networks:
+  checkout:
+  payment-provider:
+
+volumes:
+  checkout-data:
+  payment-provider-data:
