@@ -3,8 +3,9 @@
 FaultLab is a TypeScript/pnpm monorepo for future fault-injection experiments.
 It currently provides two independent NestJS services, isolated PostgreSQL
 instances, versioned migrations, and a local Docker environment. Checkout supports
-order creation and lookup. Payment processing, the fault engine, CLI, and scenario
-runner are not implemented.
+order creation and lookup. The payment provider independently creates and queries
+fictitious successful charges. The services are not connected; order payment,
+the fault engine, CLI, and scenario runner are not implemented.
 
 ## Requirements
 
@@ -126,11 +127,12 @@ advisory locking and transactional execution. Migrations are explicit deployment
 commands; application startup does not apply them automatically.
 
 The initial migration creates an empty checkout or payment_provider schema. A
-second checkout migration creates checkout.orders. The provider still has no
-business tables. The tool also creates its migration bookkeeping table. Reverting
+second checkout migration creates checkout.orders; a second provider migration
+creates payment_provider.charges. The tool also creates its migration bookkeeping table. Reverting
 the initial migration drops the empty schema without CASCADE; a schema containing
 unexpected objects is not discarded. Reverting the orders migration drops the
-orders table and its data.
+orders table and its data. Reverting the charges migration drops the charges table
+and its non-unique lookup index, along with the stored charges.
 
 | Action                  | Host command                  | Full Compose command                                           |
 | ----------------------- | ----------------------------- | -------------------------------------------------------------- |
@@ -198,7 +200,81 @@ Repository queries use the existing pg pool and bound parameters. PostgreSQL
 stores UUID identifiers, integer amounts and timestamptz dates, with NOT NULL,
 primary key, amount range, BRL-only and status constraints. A PENDING_PAYMENT row
 must have a null providerChargeId; a PAID row must have a non-null UUID. The API
-only creates PENDING_PAYMENT rows. There is no payment endpoint or provider call.
+only creates PENDING_PAYMENT rows. Checkout has no order-payment endpoint or provider call.
+
+## Charges API (payment provider only)
+
+Apply the provider migrations before using these routes. For an existing Compose
+installation:
+
+```sh
+docker compose up -d --build --wait payment-provider
+docker compose exec payment-provider node dist/migrate.js up
+```
+
+For a host provider process, use `pnpm db:payment-provider:up` before starting it.
+
+`POST /charges` requires exactly these JSON fields:
+
+```json
+{
+  "merchantReference": "f0156e6a-6fd7-4f5a-b2ea-df53db095c8c",
+  "amountCents": 12990,
+  "currency": "BRL"
+}
+```
+
+After PostgreSQL confirms persistence, it returns HTTP 201 with the stored charge:
+
+```json
+{
+  "id": "387c38f5-926f-4985-a9ca-41b65a1f72c3",
+  "merchantReference": "f0156e6a-6fd7-4f5a-b2ea-df53db095c8c",
+  "amountCents": 12990,
+  "currency": "BRL",
+  "status": "SUCCEEDED",
+  "createdAt": "2026-10-25T18:00:00.000Z"
+}
+```
+
+`merchantReference` must be a UUID. It is an external order reference: the provider
+does not check whether an order exists, call checkout, or access its database.
+There is no foreign key and no uniqueness constraint on this reference. Every
+valid POST creates an independent fictitious charge with its own UUID, including
+repeated or concurrent requests with identical bodies. There is no deduplication
+or idempotency behavior in this stage.
+
+`amountCents` must be a JSON integer from 1 through 2147483647, and `currency` must
+be exactly `BRL`. Missing fields, numeric strings, fractions, out-of-range amounts,
+invalid UUIDs/currencies, non-object bodies and unknown properties return HTTP 400.
+`id`, `status` and `createdAt` are server-controlled and cannot be supplied in the
+request. The database enforces UUID/integer/timestamptz types, required fields,
+the amount range, BRL currency and SUCCEEDED status. The repository awaits the
+parameterized INSERT before responding; persistence failures do not return 201.
+
+| Route                                 | Result                                                                        |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| `GET /charges/:id`                    | HTTP 200 with one charge, 400 for a malformed UUID, 404 if missing            |
+| `GET /charges?merchantReference=UUID` | HTTP 200 with an array containing only that reference's charges; `[]` if none |
+
+The list endpoint requires one valid merchantReference UUID. Missing, invalid,
+repeated/array reference parameters and unknown query properties return HTTP 400;
+there is no unfiltered list. Results sort by `createdAt ASC, id ASC` for stable
+ordering, including equal creation timestamps. A non-unique index on
+`(merchant_reference, created_at, id)` supports this query.
+
+Example in PowerShell, using an arbitrary external UUID without contacting checkout:
+
+```powershell
+$reference = [guid]::NewGuid().ToString()
+$body = @{ merchantReference = $reference; amountCents = 12990; currency = 'BRL' } | ConvertTo-Json
+$charge = Invoke-RestMethod -Method Post -Uri 'http://localhost:3002/charges' -ContentType 'application/json' -Body $body
+Invoke-RestMethod -Uri "http://localhost:3002/charges/$($charge.id)"
+Invoke-RestMethod -Uri "http://localhost:3002/charges?merchantReference=$reference"
+```
+
+The charges module has its own controller, DTOs, service and repository and uses
+only the provider's existing pg pool. Creating a charge does not update any order.
 
 ## Health and database lifecycle
 
@@ -264,6 +340,7 @@ local Docker environment.
 | pnpm test             | Run environment and HTTP health tests with a database stub                   |
 | pnpm test:integration | Verify real PostgreSQL identity, parameters, readiness and pool shutdown     |
 | pnpm test:orders      | Provision an isolated PostgreSQL and test orders, constraints and migrations |
+| pnpm test:charges     | Provision an isolated provider PostgreSQL and test charges and persistence   |
 | pnpm docker:config    | Validate Compose using the tracked example values                            |
 | pnpm check            | Run lint, formatting check, types, unit/HTTP tests and build                 |
 
@@ -302,13 +379,34 @@ The suite covers creation and persisted lookup, both amount boundaries, UUID
 fractions, invalid currencies, direct SQL constraint violations and timestamp
 types. Test fixtures for the PAID constraint do not implement a payment workflow.
 `pnpm test:integration` remains the separate infrastructure suite against the
-configured service databases; it does not run the disposable orders suite.
+configured service databases; it does not run the disposable business suites.
+
+The charges suite also provisions its own temporary PostgreSQL automatically:
+
+```sh
+pnpm test:charges
+```
+
+It targets only payment-provider-test-db in compose.test.yaml, using the
+charges-tests profile, a unique project name, a separate network, random localhost
+port, provider-only credentials and tmpfs storage. No checkout database or service
+is started or accessed. It applies provider migrations, runs real connection and
+HTTP/SQL tests, checks migration down/up, and cleans up even after a test failure.
+The command needs Docker; database failures fail the command rather than skipping
+tests. It can run alongside the development stack and the isolated orders suite.
+
+Coverage includes independent/repeated/concurrent charges, visible committed rows
+from another connection, a blocked INSERT that must not return 201 early, an
+actual database write failure, lookup by ID, isolated reference filtering, stable
+timestamp/UUID ordering, strict body/query validation and database constraints.
+It also verifies that merchantReference has no foreign key or unique index and
+that charging works with no orders schema present.
 
 ## Layout
 
 ```text
 compose.yaml
-compose.test.yaml     # Disposable checkout PostgreSQL for pnpm test:orders
+compose.test.yaml     # Isolated PostgreSQL for test:orders and test:charges
 examples/
   checkout/           # NestJS API, PostgreSQL pool, migrations, Dockerfile
   payment-provider/   # Independent NestJS provider, pool, migrations, Dockerfile

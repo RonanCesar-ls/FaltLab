@@ -1,4 +1,4 @@
-# Disposable checkout test database. Never attaches to development volumes/networks.
+# Disposable test databases. Never attach to development volumes/networks.
 services:
   checkout-test-db:
     image: postgres:17-alpine
@@ -20,3 +20,30 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
+
+  payment-provider-test-db:
+    image: postgres:17-alpine
+    profiles: ['charges-tests']
+    environment:
+      POSTGRES_DB: faultlab_payment_provider_test
+      POSTGRES_USER: faultlab_payment_provider_test
+      POSTGRES_PASSWORD: faultlab_payment_provider_test_only
+    ports:
+      - '127.0.0.1::5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks:
+      - payment-provider-test
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+networks:
+  payment-provider-test:

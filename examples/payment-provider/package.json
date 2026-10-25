@@ -11,13 +11,16 @@
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
     "migrate:up": "node --require ts-node/register src/migrate.ts up",
     "migrate:down": "node --require ts-node/register src/migrate.ts down",
-    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/test/*.integration.js"
+    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/test/*.integration.js",
+    "test:charges": "tsc -p tsconfig.test.json && node test/run-postgres-tests.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-express": "^11.1.6",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "node-pg-migrate": "^9.0.0",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
