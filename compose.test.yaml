@@ -1,0 +1,22 @@
+# Disposable checkout test database. Never attaches to development volumes/networks.
+services:
+  checkout-test-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: faultlab_checkout_test
+      POSTGRES_USER: faultlab_checkout_test
+      POSTGRES_PASSWORD: faultlab_checkout_test_only
+    ports:
+      - '127.0.0.1::5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

@@ -2,8 +2,9 @@
 
 FaultLab is a TypeScript/pnpm monorepo for future fault-injection experiments.
 It currently provides two independent NestJS services, isolated PostgreSQL
-instances, versioned migrations, and a local Docker environment. Order/payment
-logic, the fault engine, CLI, and scenario runner are not implemented.
+instances, versioned migrations, and a local Docker environment. Checkout supports
+order creation and lookup. Payment processing, the fault engine, CLI, and scenario
+runner are not implemented.
 
 ## Requirements
 
@@ -124,10 +125,12 @@ stored in public.pgmigrations in that service's own database, with the tool's
 advisory locking and transactional execution. Migrations are explicit deployment
 commands; application startup does not apply them automatically.
 
-The initial migration creates only an empty checkout or payment_provider schema.
-It does not create order, payment or other business tables. The tool creates only
-its migration bookkeeping table. Reverting the initial migration drops the empty
-schema without CASCADE; a schema containing unexpected objects is not discarded.
+The initial migration creates an empty checkout or payment_provider schema. A
+second checkout migration creates checkout.orders. The provider still has no
+business tables. The tool also creates its migration bookkeeping table. Reverting
+the initial migration drops the empty schema without CASCADE; a schema containing
+unexpected objects is not discarded. Reverting the orders migration drops the
+orders table and its data.
 
 | Action                  | Host command                  | Full Compose command                                           |
 | ----------------------- | ----------------------------- | -------------------------------------------------------------- |
@@ -138,6 +141,64 @@ schema without CASCADE; a schema containing unexpected objects is not discarded.
 
 Up applies all pending migrations; down reverts one migration per invocation.
 Each command loads the same validated connection configuration as its service.
+
+## Orders API (checkout only)
+
+Apply the checkout migrations before using these routes. For an existing Compose
+installation, rebuild checkout and apply the pending migration:
+
+```sh
+docker compose up -d --build --wait checkout
+docker compose exec checkout node dist/migrate.js up
+```
+
+For a host checkout process, use `pnpm db:checkout:up` before starting it.
+
+`POST /orders` requires exactly these JSON fields:
+
+```json
+{ "amountCents": 12990, "currency": "BRL" }
+```
+
+It returns HTTP 201 with the persisted order:
+
+```json
+{
+  "id": "f0156e6a-6fd7-4f5a-b2ea-df53db095c8c",
+  "amountCents": 12990,
+  "currency": "BRL",
+  "status": "PENDING_PAYMENT",
+  "providerChargeId": null,
+  "createdAt": "2026-10-25T18:00:00.000Z",
+  "updatedAt": "2026-10-25T18:00:00.000Z"
+}
+```
+
+`amountCents` must be a JSON integer from 1 through 2147483647, inclusive. Numeric
+strings, fractions, zero, negative numbers and values above the maximum return
+HTTP 400. `currency` must be exactly the string `BRL`. Both fields are required;
+nulls, non-object bodies and unknown fields also return 400. Supplying `id`,
+`status`, `providerChargeId`, `createdAt` or `updatedAt` is rejected: UUIDs,
+initial status and timestamps are controlled by the server. Initial timestamps
+are equal and are returned as ISO 8601 UTC strings.
+
+`GET /orders/:id` returns HTTP 200 with the same order representation, HTTP 400
+for a malformed UUID, or HTTP 404 for a valid UUID that does not exist. This is a
+single-order lookup; no order list or update route is implemented.
+
+Example in PowerShell:
+
+```powershell
+$order = Invoke-RestMethod -Method Post -Uri 'http://localhost:3001/orders' -ContentType 'application/json' -Body '{"amountCents":12990,"currency":"BRL"}'
+Invoke-RestMethod -Uri "http://localhost:3001/orders/$($order.id)"
+```
+
+The orders module separates controller, DTO validation, service and repository.
+Repository queries use the existing pg pool and bound parameters. PostgreSQL
+stores UUID identifiers, integer amounts and timestamptz dates, with NOT NULL,
+primary key, amount range, BRL-only and status constraints. A PENDING_PAYMENT row
+must have a null providerChargeId; a PAID row must have a non-null UUID. The API
+only creates PENDING_PAYMENT rows. There is no payment endpoint or provider call.
 
 ## Health and database lifecycle
 
@@ -192,18 +253,19 @@ local Docker environment.
 
 ## Commands and validation
 
-| Command               | Purpose                                                                  |
-| --------------------- | ------------------------------------------------------------------------ |
-| pnpm dev              | Start both host services in watch mode                                   |
-| pnpm build            | Compile each service into its own dist/ directory                        |
-| pnpm lint             | Run ESLint with type-aware TypeScript rules                              |
-| pnpm format           | Apply Prettier formatting                                                |
-| pnpm format:check     | Check formatting without changing files                                  |
-| pnpm typecheck        | Check strict TypeScript types, including tests                           |
-| pnpm test             | Run environment and HTTP health tests with a database stub               |
-| pnpm test:integration | Verify real PostgreSQL identity, parameters, readiness and pool shutdown |
-| pnpm docker:config    | Validate Compose using the tracked example values                        |
-| pnpm check            | Run lint, formatting check, types, unit/HTTP tests and build             |
+| Command               | Purpose                                                                      |
+| --------------------- | ---------------------------------------------------------------------------- |
+| pnpm dev              | Start both host services in watch mode                                       |
+| pnpm build            | Compile each service into its own dist/ directory                            |
+| pnpm lint             | Run ESLint with type-aware TypeScript rules                                  |
+| pnpm format           | Apply Prettier formatting                                                    |
+| pnpm format:check     | Check formatting without changing files                                      |
+| pnpm typecheck        | Check strict TypeScript types, including tests                               |
+| pnpm test             | Run environment and HTTP health tests with a database stub                   |
+| pnpm test:integration | Verify real PostgreSQL identity, parameters, readiness and pool shutdown     |
+| pnpm test:orders      | Provision an isolated PostgreSQL and test orders, constraints and migrations |
+| pnpm docker:config    | Validate Compose using the tracked example values                            |
+| pnpm check            | Run lint, formatting check, types, unit/HTTP tests and build                 |
 
 `pnpm check` requires no Docker or PostgreSQL server. Integration tests are
 explicitly separate and fail if PostgreSQL is unavailable; they are not silently
@@ -220,10 +282,33 @@ They do not create or delete business data. Docker image build, actual Compose
 startup, readiness outage/recovery and migration up/down validation additionally
 require a running Docker daemon. `pnpm docker:config` can run without the daemon.
 
+The orders suite has its own automatic, disposable database:
+
+```sh
+pnpm test:orders
+```
+
+This command requires Docker and runs independently of the development stack. It
+starts compose.test.yaml with a unique Compose project name, a random localhost
+port, separate credentials and a tmpfs PostgreSQL data directory. It applies the
+real migrations, runs checkout connection tests plus order HTTP/constraint tests,
+verifies migration down/up, then removes its containers and network even on test
+failure. It never attaches to development volumes or uses a service .env database
+for the orders suite. PostgreSQL availability failures cause a nonzero exit;
+tests are not skipped.
+
+The suite covers creation and persisted lookup, both amount boundaries, UUID
+400/404 cases, missing/unknown/server-controlled fields, numeric strings,
+fractions, invalid currencies, direct SQL constraint violations and timestamp
+types. Test fixtures for the PAID constraint do not implement a payment workflow.
+`pnpm test:integration` remains the separate infrastructure suite against the
+configured service databases; it does not run the disposable orders suite.
+
 ## Layout
 
 ```text
 compose.yaml
+compose.test.yaml     # Disposable checkout PostgreSQL for pnpm test:orders
 examples/
   checkout/           # NestJS API, PostgreSQL pool, migrations, Dockerfile
   payment-provider/   # Independent NestJS provider, pool, migrations, Dockerfile

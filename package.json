@@ -22,7 +22,8 @@
     "db:checkout:down": "pnpm --filter @faultlab/checkout migrate:down",
     "db:payment-provider:up": "pnpm --filter @faultlab/payment-provider migrate:up",
     "db:payment-provider:down": "pnpm --filter @faultlab/payment-provider migrate:down",
-    "docker:config": "docker compose --env-file .env.example config --quiet"
+    "docker:config": "docker compose --env-file .env.example config --quiet",
+    "test:orders": "pnpm --filter @faultlab/checkout test:orders"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
