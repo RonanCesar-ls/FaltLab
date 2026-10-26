@@ -31,6 +31,7 @@ export interface CommandOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   capture?: boolean;
+  allowedExitCodes?: number[];
 }
 
 export function command(
@@ -91,7 +92,10 @@ export function command(
               `Command aborted or exceeded its deadline: ${executable}. ${options.capture ? stderr : ''}`,
             ),
           );
-        else if (code !== 0)
+        else if (
+          code === null ||
+          !(options.allowedExitCodes ?? [0]).includes(code)
+        )
           reject(
             new Error(
               `${executable} exited with ${code}. ${options.capture ? stderr : ''}`,

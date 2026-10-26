@@ -11,11 +11,11 @@
   "scripts": {
     "dev": "pnpm --parallel --filter \"./examples/*\" run dev",
     "build": "pnpm -r run build",
-    "lint": "eslint . --max-warnings 0",
+    "lint": "pnpm build:runner && eslint . --max-warnings 0",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
-    "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
+    "typecheck": "pnpm build:runner && pnpm -r run typecheck",
+    "test": "pnpm build:runner && pnpm -r run test",
     "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build",
     "test:integration": "pnpm -r run test:integration",
     "db:checkout:up": "pnpm --filter @faultlab/checkout migrate:up",
@@ -27,7 +27,10 @@
     "test:charges": "pnpm --filter @faultlab/payment-provider test:charges",
     "test:e2e": "pnpm --filter @faultlab/e2e test:e2e",
     "dev:proxy": "pnpm --filter @faultlab/fault-proxy dev",
-    "test:proxy": "pnpm --filter @faultlab/fault-proxy test"
+    "test:proxy": "pnpm --filter @faultlab/fault-proxy test",
+    "build:runner": "pnpm --filter @faultlab/cli... build",
+    "faultlab": "node packages/cli/dist/main.js",
+    "test:scenario": "pnpm build:runner && pnpm --filter @faultlab/e2e test:scenario"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

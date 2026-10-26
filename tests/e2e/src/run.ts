@@ -14,6 +14,7 @@ const packageDirectory = resolve(__dirname, '..');
 const repository = resolve(packageDirectory, '../..');
 const project = newProject();
 const artifacts = resolve(packageDirectory, 'artifacts', project);
+const withScenario = process.argv[2] === 'duplicate-charge';
 const controller = new AbortController();
 let interrupted: 'SIGINT' | 'SIGTERM' | undefined;
 const onInterrupt = (): void => {
@@ -38,6 +39,9 @@ function compose(args: string[], cleanup = false): Promise<string> {
       resolve(packageDirectory, '.env.example'),
       '-f',
       resolve(packageDirectory, 'compose.yaml'),
+      ...(withScenario
+        ? ['-f', resolve(packageDirectory, 'compose.duplicate-charge.yaml')]
+        : []),
       '-p',
       project,
       ...args,
@@ -54,7 +58,14 @@ function compose(args: string[], cleanup = false): Promise<string> {
 async function saveLogs(): Promise<void> {
   await mkdir(artifacts, { recursive: true });
   const logs = await compose(
-    ['logs', '--no-color', '--no-log-prefix', 'checkout', 'payment-provider'],
+    [
+      'logs',
+      '--no-color',
+      '--no-log-prefix',
+      'checkout',
+      'payment-provider',
+      ...(withScenario ? ['fault-proxy'] : []),
+    ],
     true,
   );
   await writeFile(resolve(artifacts, 'services.log'), logs + '\n');
@@ -78,7 +89,7 @@ async function main(): Promise<void> {
     const config: unknown = JSON.parse(
       await compose(['config', '--format', 'json']),
     );
-    assertIsolatedCompose(config);
+    assertIsolatedCompose(config, withScenario);
     ownsResources = true;
     await compose(['up', '-d', '--build', '--wait', '--wait-timeout', '120']);
     const checkoutUrl =
@@ -111,12 +122,19 @@ async function main(): Promise<void> {
       E2E_PROVIDER_URL: providerUrl,
       E2E_PROVIDER_PGPORT: String(providerPort),
     };
-    await runTests('payment.e2e.js', env);
-    await saveLogs();
-    await runTests('correlation.e2e.js', env);
-    await compose(['stop', '--timeout', '10', 'payment-provider']);
-    await waitForUnavailable(providerUrl, controller.signal);
-    await runTests('outage.e2e.js', env);
+    if (withScenario) {
+      env['E2E_PROXY_URL'] =
+        'http://127.0.0.1:' +
+        localPort(await compose(['port', 'fault-proxy', '3003']));
+      await runTests('duplicate-charge.e2e.js', env);
+    } else {
+      await runTests('payment.e2e.js', env);
+      await saveLogs();
+      await runTests('correlation.e2e.js', env);
+      await compose(['stop', '--timeout', '10', 'payment-provider']);
+      await waitForUnavailable(providerUrl, controller.signal);
+      await runTests('outage.e2e.js', env);
+    }
     console.log(JSON.stringify({ event: 'e2e.passed', project }));
   } finally {
     if (ownsResources) {

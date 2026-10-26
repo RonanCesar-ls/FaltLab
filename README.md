@@ -3,7 +3,8 @@
 FaultLab is a pnpm/TypeScript monorepo for experimenting with payment failure
 boundaries. This first version contains two NestJS services, separate PostgreSQL
 instances, strict HTTP contracts, correlation IDs, JSON logs, migrations and
-repeatable end-to-end tests. The FaultLab engine and CLI are not implemented.
+repeatable end-to-end tests. A small sequential executor and CLI run the first
+fixed duplicate-charge experiment and save provider-backed evidence.
 
 | Component                 | Responsibility                                           | Local port        |
 | ------------------------- | -------------------------------------------------------- | ----------------- |
@@ -93,6 +94,24 @@ For compiled host services, run `pnpm build`, then each service's filtered start
 command in its own terminal. Ctrl+C stops development services; Compose SIGTERM
 invokes Nest shutdown hooks and closes pg pools.
 
+## First automated experiment
+
+Prepare both services and the proxy using the [scenario guide](docs/duplicate-charge.md).
+Checkout must route through the proxy; no other payments may run simultaneously
+because its fault is global and single-use. From the repository root:
+
+```sh
+pnpm build:runner
+pnpm faultlab duplicate-charge
+```
+
+Each run creates its own order. The CLI records the lost response, queries the
+provider's charges, submits the second payment and evaluates at most one SUCCEEDED
+charge. Reports are saved in reports/duplicate-charge/<runId>.json (Git-ignored).
+Exit codes: 0 satisfied, 1 violated, 2 inconclusive. A detected duplicate is an
+expected result with the current services, not a CLI crash. No data is deleted.
+See the guide for exact startup, configuration, report fields and limitations.
+
 ## Checks and tests
 
 To observe a provider charge whose confirmation never reaches checkout, use the
@@ -108,6 +127,7 @@ pnpm test:orders
 pnpm test:charges
 pnpm test:e2e
 pnpm test:proxy
+pnpm test:scenario
 ```
 
 | Command                                 | What it executes                                                                                                     | Docker required?             |
@@ -120,6 +140,7 @@ pnpm test:proxy
 | pnpm test:orders                        | Real checkout PostgreSQL, order/payment HTTP tests, migration down/up                                                | Yes                          |
 | pnpm test:charges                       | Real provider PostgreSQL, charge HTTP/SQL tests, migration down/up                                                   | Yes                          |
 | pnpm test:e2e                           | Build/run both services over HTTP, two real databases, direct provider SQL assertions, outage and correlation checks | Yes                          |
+| pnpm test:scenario                      | Real duplicate-charge CLI runs, expected violation and independent provider SQL evidence                             | Yes                          |
 | pnpm docker:config                      | Validate development Compose using example values                                                                    | No daemon required           |
 | pnpm test:integration                   | Existing infrastructure checks against configured service databases                                                  | Running configured databases |
 
@@ -152,6 +173,8 @@ A missing Docker daemon fails the Docker-dependent command; tests are not skippe
 .github/workflows/ci.yml runs on main pushes, pull requests and manual dispatch.
 It uses Node.js 24 and pinned pnpm, installs with --frozen-lockfile, then checks
 formatting, lint, types, build, unit/component tests, PostgreSQL suites and E2E.
+The duplicate-charge integration suite treats the expected rule violation as a
+successful test only after checking the persisted provider records independently.
 GitHub-hosted Ubuntu supplies Docker; no development credentials or external
 payment service are needed. Actions are pinned by commit SHA and permissions are
 read-only. E2E diagnostics are uploaded with a seven-day retention period.
@@ -171,12 +194,14 @@ There are no retries, distributed idempotency, cross-service transactions,
 compensation or automatic reconciliation. This is a local demonstrator without
 authentication, real money movement or production deployment guarantees.
 
-## Documentation and reserved components
+## Documentation and components
 
 - [Architecture and operational boundaries](docs/architecture.md)
 - [HTTP API, validation, environment and error codes](docs/http-api.md)
 - [Optional fault proxy: configuration and manual payment experiment](docs/fault-proxy.md)
+- [Duplicate-charge scenario: prerequisites, command, evidence and exit codes](docs/duplicate-charge.md)
 - [ADR 0001: independent services and databases](docs/adr/0001-independent-services-and-databases.md)
 
-packages/core, packages/cli and scenarios remain purpose-only placeholders. No
-FaultLab engine, experiment runner or CLI has been introduced.
+packages/core contains the generic sequential executor, scenarios contains the
+HTTP-only duplicate-charge definition, and packages/cli provides its terminal
+command. Replay, random generation, shrinking and idempotency fixes are deferred.

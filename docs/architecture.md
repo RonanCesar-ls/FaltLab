@@ -1,7 +1,8 @@
 # Architecture
 
 FaultLab's first version demonstrates the boundary between an order database and
-an independent fictitious payment provider. It is not a fault-injection engine.
+an independent fictitious payment provider. A small generic executor now runs one
+fixed HTTP scenario without replay or generated experiments.
 
 ```mermaid
 flowchart LR
@@ -24,8 +25,10 @@ flowchart LR
   HTTP contract without importing provider source or accessing provider SQL.
 - Each service owns environment validation, a connection pool, migrations,
   observability, its bootstrap and its Dockerfile.
-- packages/core, packages/cli and scenarios remain reserved. tests/e2e is a real
-  workspace package containing test infrastructure only.
+- packages/core executes generic sequential steps and a final rule check.
+- scenarios owns the HTTP-only duplicate-charge definition; packages/cli selects
+  it, prints progress and saves JSON evidence. Neither imports application internals.
+- tests/e2e contains isolated test infrastructure and provider SQL assertions.
 
 The two PostgreSQL instances have independent databases, roles, processes and
 data volumes. merchantReference is an external UUID, not a foreign key and not a
@@ -144,11 +147,16 @@ existing gateway URL. It uses Node.js HTTP/HTTPS in an independent workspace
 package with no database access. It receives a complete provider 201 response
 before consuming one in-memory fault and closing the caller connection without
 delivering that confirmation. The default direct path and payment rules remain
-unchanged. This is a manually armed transport experiment, not the future engine.
+unchanged. The proxy remains a manually armed transport component.
 
 ## Deferred scope
 
+See the [duplicate-charge guide](duplicate-charge.md) for the first automated
+experiment. It uses provider records to establish charge counts and requires
+exclusive payment traffic because the proxy's fault is global. A rule violation
+is a completed experiment; preparation/infrastructure errors are inconclusive.
+
 There is no authentication/authorization, real money movement, distributed
 idempotency, concurrency-safe payment protocol, automatic reconciliation,
-production secret/role management, fault engine, scenario runner or CLI. Those
+production secret/role management, replay, random generation or shrinking. Those
 are not implied by a passing sequential happy-path E2E test.

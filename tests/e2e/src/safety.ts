@@ -21,7 +21,7 @@ export function localPort(mapping: string): number {
   return port;
 }
 
-export function assertIsolatedCompose(value: unknown): void {
+export function assertIsolatedCompose(value: unknown, withProxy = false): void {
   assert.ok(value && typeof value === 'object');
   const config = value as Record<string, unknown>;
   assert.ok(
@@ -53,6 +53,7 @@ export function assertIsolatedCompose(value: unknown): void {
   assert.deepEqual(Object.keys(services).sort(), [
     'checkout',
     'checkout-db',
+    ...(withProxy ? ['fault-proxy'] : []),
     'payment-provider',
     'provider-db',
   ]);

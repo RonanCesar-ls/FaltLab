@@ -1,0 +1,20 @@
+# Test-only overlay. The development Compose and the default E2E path remain direct.
+services:
+  checkout:
+    environment:
+      PAYMENT_PROVIDER_URL: http://fault-proxy:3003
+      PAYMENT_PROVIDER_TIMEOUT_MS: '3000'
+  fault-proxy:
+    build:
+      context: ../..
+      dockerfile: packages/fault-proxy/Dockerfile
+    init: true
+    stop_grace_period: 10s
+    environment:
+      HOST: 0.0.0.0
+      PORT: '3003'
+      PAYMENT_PROVIDER_URL: http://payment-provider:3002
+      UPSTREAM_TIMEOUT_MS: '5000'
+      SHUTDOWN_TIMEOUT_MS: '8000'
+    ports: ['127.0.0.1::3003']
+    networks: [payments]

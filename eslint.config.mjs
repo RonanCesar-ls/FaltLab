@@ -14,7 +14,12 @@ export default defineConfig(
   },
   js.configs.recommended,
   {
-    files: ['examples/**/*.ts', 'tests/**/*.ts', 'packages/**/*.ts'],
+    files: [
+      'examples/**/*.ts',
+      'tests/**/*.ts',
+      'packages/**/*.ts',
+      'scenarios/**/*.ts',
+    ],
     extends: [...tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {

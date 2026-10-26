@@ -2,6 +2,7 @@ packages:
   - examples/*
   - packages/*
   - tests/*
+  - scenarios
 
 ignoredBuiltDependencies:
   - '@nestjs/core'

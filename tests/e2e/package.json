@@ -7,9 +7,11 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test dist/harness.test.js",
-    "test:e2e": "pnpm build && node dist/run.js"
+    "test:e2e": "pnpm build && node dist/run.js",
+    "test:scenario": "pnpm build && node dist/run.js duplicate-charge"
   },
   "dependencies": {
+    "@faultlab/core": "workspace:*",
     "pg": "^8.23.1"
   },
   "devDependencies": {

@@ -1,5 +1,9 @@
 # Observe a lost payment response
 
+For an automated version that repeats the payment and evaluates provider evidence,
+see the [duplicate-charge scenario](duplicate-charge.md). Run it exclusively;
+the proxy's one-shot fault is global.
+
 The optional packages/fault-proxy inserts one HTTP boundary:
 
 ```text

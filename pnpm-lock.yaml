@@ -125,10 +125,30 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
 
+  packages/cli:
+    dependencies:
+      '@faultlab/core':
+        specifier: workspace:*
+        version: link:../core
+      '@faultlab/scenarios':
+        specifier: workspace:*
+        version: link:../../scenarios
+
+  packages/core: {}
+
   packages/fault-proxy: {}
+
+  scenarios:
+    dependencies:
+      '@faultlab/core':
+        specifier: workspace:*
+        version: link:../packages/core
 
   tests/e2e:
     dependencies:
+      '@faultlab/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       pg:
         specifier: ^8.23.1
         version: 8.23.1
