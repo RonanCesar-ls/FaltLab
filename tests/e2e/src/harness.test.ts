@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, rmdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { command } from './command';
 import { waitUntil } from './readiness';
@@ -79,5 +82,63 @@ void describe('E2E harness safety and readiness deadlines (no Docker required)',
       }),
       /deadline/,
     );
+  });
+  void it('cancels an owned command together with its subprocesses', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'faultlab-e2e-process-'));
+    const pidFile = join(directory, 'child.pid');
+    const controller = new AbortController();
+    const result = command(
+      process.execPath,
+      [
+        '-e',
+        `const {spawn}=require('node:child_process');
+const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+require('node:fs').writeFileSync(process.argv[1],String(child.pid));
+setInterval(()=>{},1000);`,
+        pidFile,
+      ],
+      { cwd: process.cwd(), signal: controller.signal, capture: true },
+    ).then(
+      () => new Error('Command unexpectedly succeeded.'),
+      (error: unknown) => error,
+    );
+    try {
+      let pid = 0;
+      await waitUntil(
+        'owned subprocess started',
+        async () => {
+          try {
+            pid = Number(await readFile(pidFile, 'utf8'));
+            return Number.isInteger(pid) && pid > 0;
+          } catch {
+            return false;
+          }
+        },
+        5000,
+        controller.signal,
+      );
+      controller.abort();
+      assert.match(String(await result), /deadline/);
+      await waitUntil(
+        'owned subprocess stopped',
+        () => {
+          try {
+            process.kill(pid, 0);
+            return Promise.resolve(false);
+          } catch (error) {
+            return Promise.resolve(
+              (error as NodeJS.ErrnoException).code === 'ESRCH',
+            );
+          }
+        },
+        5000,
+        new AbortController().signal,
+      );
+    } finally {
+      controller.abort();
+      await result;
+      await rm(pidFile, { force: true });
+      await rmdir(directory);
+    }
   });
 });

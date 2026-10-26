@@ -113,7 +113,9 @@ return a controlled 503/504 without a provider charge.
 
 Each node:test module runs directly in one owned child process, avoiding forked
 test-worker grandchildren. Commands are spawned without shells and awaited until
-close. Deadlines/cancellation terminate and reap owned children. Finally cleanup
+close. Deadlines/cancellation terminate owned process trees (process groups on
+Linux, taskkill /T on Windows) and reap direct children, including commands that
+launch a Compose plugin. Finally cleanup
 uses an independent deadline and runs even after assertion failure, timeout or
 handled SIGINT/SIGTERM. It removes only the validated random Compose project and
 verifies no owned containers remain. No DELETE/TRUNCATE is issued against any

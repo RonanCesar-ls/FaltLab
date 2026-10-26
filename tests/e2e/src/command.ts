@@ -1,5 +1,30 @@
 import { spawn } from 'node:child_process';
 
+async function terminateTree(pid: number): Promise<void> {
+  if (process.platform !== 'win32') {
+    // Each command owns a process group, including Docker's Compose plugin.
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    const deadline = setTimeout(() => killer.kill(), 10_000);
+    killer.once('error', reject);
+    killer.once('close', (code) => {
+      clearTimeout(deadline);
+      if (code === 0) resolve();
+      else reject(new Error('Could not terminate owned process tree: ' + pid));
+    });
+  });
+}
+
 export interface CommandOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -21,18 +46,24 @@ export function command(
       env: options.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
     });
     let stdout = '';
     let stderr = '';
     let aborted = false;
     let spawnError: Error | undefined;
-    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    let termination: Promise<void> | undefined;
     const terminate = (): void => {
       if (aborted || child.exitCode !== null || child.signalCode !== null)
         return;
       aborted = true;
-      child.kill('SIGTERM');
-      forceKill = setTimeout(() => child.kill('SIGKILL'), 3000);
+      if (child.pid !== undefined) {
+        termination = terminateTree(child.pid).catch((error: unknown) => {
+          spawnError =
+            error instanceof Error ? error : new Error(String(error));
+          child.kill('SIGKILL');
+        });
+      }
     };
     const timeout = setTimeout(terminate, options.timeoutMs ?? 120_000);
     options.signal?.addEventListener('abort', terminate, { once: true });
@@ -51,22 +82,23 @@ export function command(
     });
     child.once('close', (code) => {
       clearTimeout(timeout);
-      if (forceKill) clearTimeout(forceKill);
       options.signal?.removeEventListener('abort', terminate);
-      if (spawnError) reject(spawnError);
-      else if (aborted)
-        reject(
-          new Error(
-            `Command aborted or exceeded its deadline: ${executable}. ${options.capture ? stderr : ''}`,
-          ),
-        );
-      else if (code !== 0)
-        reject(
-          new Error(
-            `${executable} exited with ${code}. ${options.capture ? stderr : ''}`,
-          ),
-        );
-      else resolve(stdout.trim());
+      void Promise.resolve(termination).then(() => {
+        if (spawnError) reject(spawnError);
+        else if (aborted)
+          reject(
+            new Error(
+              `Command aborted or exceeded its deadline: ${executable}. ${options.capture ? stderr : ''}`,
+            ),
+          );
+        else if (code !== 0)
+          reject(
+            new Error(
+              `${executable} exited with ${code}. ${options.capture ? stderr : ''}`,
+            ),
+          );
+        else resolve(stdout.trim());
+      });
     });
   });
 }
