@@ -12,6 +12,7 @@ repeatable end-to-end tests. The FaultLab engine and CLI are not implemented.
 | checkout-db               | Checkout-owned PostgreSQL                                | 5433              |
 | payment-provider-db       | Provider-owned PostgreSQL                                | 5434              |
 | tests/e2e                 | Real HTTP services plus isolated PostgreSQL verification | Random test ports |
+| packages/fault-proxy      | Optional one-shot loss of a completed payment response   | 3003              |
 
 ## Requirements
 
@@ -94,12 +95,19 @@ invokes Nest shutdown hooks and closes pg pools.
 
 ## Checks and tests
 
+To observe a provider charge whose confirmation never reaches checkout, use the
+optional [fault proxy experiment](docs/fault-proxy.md). Start it with
+`pnpm dev:proxy` and explicitly set checkout's PAYMENT_PROVIDER_URL to
+http://127.0.0.1:3003 in checkout's terminal. The proxy's upstream remains
+http://127.0.0.1:3002. Defaults and Compose continue to use the direct path.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm check
 pnpm test:orders
 pnpm test:charges
 pnpm test:e2e
+pnpm test:proxy
 ```
 
 | Command                                 | What it executes                                                                                                     | Docker required?             |
@@ -107,7 +115,8 @@ pnpm test:e2e
 | pnpm check                              | Lint, formatting, strict types, unit/component/harness tests, workspace build                                        | No                           |
 | pnpm format / pnpm format:check         | Write/check Prettier formatting                                                                                      | No                           |
 | pnpm lint / pnpm typecheck / pnpm build | Individual workspace checks                                                                                          | No                           |
-| pnpm test                               | Service unit/component tests and E2E harness unit tests                                                              | No                           |
+| pnpm test                               | Service unit/component tests, proxy HTTP tests and E2E harness unit tests                                            | No                           |
+| pnpm test:proxy                         | Controlled HTTP provider, one-shot loss, correlation, deadlines and shutdown                                         | No                           |
 | pnpm test:orders                        | Real checkout PostgreSQL, order/payment HTTP tests, migration down/up                                                | Yes                          |
 | pnpm test:charges                       | Real provider PostgreSQL, charge HTTP/SQL tests, migration down/up                                                   | Yes                          |
 | pnpm test:e2e                           | Build/run both services over HTTP, two real databases, direct provider SQL assertions, outage and correlation checks | Yes                          |
@@ -166,6 +175,7 @@ authentication, real money movement or production deployment guarantees.
 
 - [Architecture and operational boundaries](docs/architecture.md)
 - [HTTP API, validation, environment and error codes](docs/http-api.md)
+- [Optional fault proxy: configuration and manual payment experiment](docs/fault-proxy.md)
 - [ADR 0001: independent services and databases](docs/adr/0001-independent-services-and-databases.md)
 
 packages/core, packages/cli and scenarios remain purpose-only placeholders. No

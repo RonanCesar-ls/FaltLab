@@ -137,6 +137,15 @@ The workflow definition is not itself evidence of a successful execution. Check
 the run for the exact commit on GitHub Actions; local validation and hosted CI
 results are distinct.
 
+## Optional response-loss proxy
+
+The optional [fault proxy](fault-proxy.md) can be inserted through checkout's
+existing gateway URL. It uses Node.js HTTP/HTTPS in an independent workspace
+package with no database access. It receives a complete provider 201 response
+before consuming one in-memory fault and closing the caller connection without
+delivering that confirmation. The default direct path and payment rules remain
+unchanged. This is a manually armed transport experiment, not the future engine.
+
 ## Deferred scope
 
 There is no authentication/authorization, real money movement, distributed

@@ -1,0 +1,14 @@
+{
+  "name": "@faultlab/fault-proxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "An opt-in HTTP proxy for dropping one completed payment response.",
+  "scripts": {
+    "dev": "pnpm build && node --env-file-if-exists=.env dist/main.js",
+    "start": "node --env-file-if-exists=.env dist/main.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+  }
+}

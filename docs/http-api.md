@@ -64,6 +64,10 @@ idempotency, compensation or reconciliation are implemented.
 
 ## Payment provider
 
+An optional [HTTP fault proxy](fault-proxy.md) exposes GET /health and
+POST /__faults/drop-next-charge-response on port 3003. It is activated only by
+changing checkout's gateway URL; provider routes and schemas remain unchanged.
+
 ### POST /charges
 
 ```json

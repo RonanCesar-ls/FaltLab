@@ -25,7 +25,9 @@
     "docker:config": "docker compose --env-file .env.example config --quiet",
     "test:orders": "pnpm --filter @faultlab/checkout test:orders",
     "test:charges": "pnpm --filter @faultlab/payment-provider test:charges",
-    "test:e2e": "pnpm --filter @faultlab/e2e test:e2e"
+    "test:e2e": "pnpm --filter @faultlab/e2e test:e2e",
+    "dev:proxy": "pnpm --filter @faultlab/fault-proxy dev",
+    "test:proxy": "pnpm --filter @faultlab/fault-proxy test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
