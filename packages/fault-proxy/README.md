@@ -80,5 +80,6 @@ exchanges too, then forcibly closes remaining connections at its own deadline.
 
 The unauthenticated control endpoint is intended for a local test environment.
 Keep the default loopback binding. This package observes the existing ambiguity;
-it does not fix idempotency or perform recovery. See the
+checkout/provider enforce persistent idempotency independently of this transport
+component. It does not retry or perform recovery itself. See the
 [manual experiment](../../docs/fault-proxy.md) for the real services.

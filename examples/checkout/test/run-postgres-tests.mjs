@@ -55,6 +55,44 @@ async function verifyMigration(env, exists) {
   }
 }
 
+async function verifyCompatibleUpgrade(env, migrate) {
+  migrate('down'); // Return to the existing schema, keeping the table and its data.
+  const client = new Client({
+    host: env.PGHOST,
+    port: Number(env.PGPORT),
+    database: env.PGDATABASE,
+    user: env.PGUSER,
+    password: env.PGPASSWORD,
+    connectionTimeoutMillis: 2000,
+  });
+  try {
+    await client.connect();
+    const ids = [randomUUID(), randomUUID()];
+    await client.query(
+      `INSERT INTO checkout.orders (id, amount_cents, currency, status, provider_charge_id) VALUES ($1::uuid, 100, 'BRL', 'PENDING_PAYMENT', NULL), ($2::uuid, 200, 'BRL', 'PAID', $3::uuid)`,
+      [...ids, randomUUID()],
+    );
+    const before = await client.query(
+      'SELECT * FROM checkout.orders WHERE id = ANY($1::uuid[]) ORDER BY id',
+      [ids],
+    );
+    migrate('up');
+    const after = await client.query(
+      'SELECT * FROM checkout.orders WHERE id = ANY($1::uuid[]) ORDER BY id',
+      [ids],
+    );
+    assert.deepEqual(
+      after.rows.map(({ payment_idempotency_key: key, ...row }) => {
+        assert.equal(key, null);
+        return row;
+      }),
+      before.rows,
+    );
+  } finally {
+    await client.end();
+  }
+}
+
 try {
   compose(['up', '-d', '--wait', '--wait-timeout', '60']);
   const address = compose(['port', 'checkout-test-db', '5432'], true);
@@ -73,6 +111,7 @@ try {
   const migrate = (direction) =>
     node(['--require', 'ts-node/register', 'src/migrate.ts', direction], env);
   migrate('up');
+  await verifyCompatibleUpgrade(env, migrate);
   await verifyMigration(env, true);
   node(
     [
@@ -85,6 +124,8 @@ try {
     env,
   );
   // The test data is disposable. Exercise rollback and reapplication on this database only.
+  migrate('down');
+  await verifyMigration(env, true); // Dropping only the key preserves orders.
   migrate('down');
   await verifyMigration(env, false);
   migrate('up');

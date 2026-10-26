@@ -254,7 +254,7 @@ void describe('Charges HTTP and PostgreSQL (isolated provider database)', () => 
     );
   }
 
-  void it('creates independent charges for repeated and concurrent identical requests', async () => {
+  void it('preserves the documented legacy mode: no key creates independent repeated/concurrent charges', async () => {
     const merchantReference = randomUUID();
     const charges = await Promise.all(
       Array.from({ length: 5 }, () => create(merchantReference, 100)),
@@ -272,6 +272,240 @@ void describe('Charges HTTP and PostgreSQL (isolated provider database)', () => 
       new Set(listed.map((charge) => charge.id)),
       new Set(charges.map((charge) => charge.id)),
     );
+  });
+
+  void it('returns the original response for a persisted key and identical parameters', async () => {
+    const key = randomUUID();
+    const input = {
+      merchantReference: randomUUID(),
+      amountCents: 12990,
+      currency: 'BRL',
+    };
+    const original = await request(server)
+      .post('/charges')
+      .set({ 'Idempotency-Key': key })
+      .send(input)
+      .expect(201);
+    const charge = parseCharge(original.body);
+    await request(server)
+      .post('/charges')
+      .set({ 'Idempotency-Key': key })
+      .send({
+        ...input,
+        merchantReference: input.merchantReference.toUpperCase(),
+      })
+      .expect(201)
+      .expect(charge);
+    const stored = await database.query<{ id: string; key: string }>(
+      'SELECT id, idempotency_key AS key FROM payment_provider.charges WHERE idempotency_key = $1',
+      [key],
+    );
+    assert.deepEqual(stored.rows, [{ id: charge.id, key }]);
+  });
+
+  for (const field of [
+    'merchantReference',
+    'amountCents',
+    'currency',
+  ] as const) {
+    void it('returns 409 when the same key changes ' + field, async () => {
+      const key = randomUUID();
+      const input = {
+        merchantReference: randomUUID(),
+        amountCents: 12990,
+        currency: 'BRL',
+      };
+      const original = await request(server)
+        .post('/charges')
+        .set({ 'Idempotency-Key': key })
+        .send(input)
+        .expect(201);
+      const changed = {
+        ...input,
+        [field]:
+          field === 'merchantReference'
+            ? randomUUID()
+            : field === 'amountCents'
+              ? 13000
+              : 'USD',
+      };
+      const conflict = await request(server)
+        .post('/charges')
+        .set({ 'Idempotency-Key': key })
+        .send(changed)
+        .expect(409);
+      assert.equal(
+        (conflict.body as Record<string, unknown>)['code'],
+        'IDEMPOTENCY_KEY_CONFLICT',
+      );
+      const records = await database.query<{ count: number }>(
+        'SELECT count(*)::int AS count FROM payment_provider.charges WHERE idempotency_key = $1',
+        [key],
+      );
+      assert.equal(records.rows[0]?.count, 1);
+      await request(server)
+        .post('/charges')
+        .set({ 'Idempotency-Key': key })
+        .send(input)
+        .expect(201)
+        .expect(parseCharge(original.body));
+    });
+  }
+
+  void it('atomically creates one charge for concurrent requests with the same key', async () => {
+    const key = randomUUID();
+    const input = {
+      merchantReference: randomUUID(),
+      amountCents: 100,
+      currency: 'BRL',
+    };
+    const responses = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        request(server)
+          .post('/charges')
+          .set({ 'Idempotency-Key': key })
+          .send(input)
+          .expect(201),
+      ),
+    );
+    const original = parseCharge(responses[0]?.body);
+    for (const response of responses)
+      assert.deepEqual(parseCharge(response.body), original);
+    const stored = await database.query<{ id: string }>(
+      'SELECT id FROM payment_provider.charges WHERE idempotency_key = $1',
+      [key],
+    );
+    assert.deepEqual(stored.rows, [{ id: original.id }]);
+    await assert.rejects(
+      database.query(
+        'INSERT INTO payment_provider.charges (merchant_reference, amount_cents, currency, idempotency_key) VALUES ($1::uuid, $2, $3, $4)',
+        [input.merchantReference, 100, 'BRL', key],
+      ),
+      { code: '23505' },
+    );
+  });
+
+  void it('serializes conflicting concurrent parameter sets instead of creating a second charge', async () => {
+    const key = randomUUID();
+    const input = { merchantReference: randomUUID(), currency: 'BRL' };
+    const responses = await Promise.all(
+      [100, 200].map((amountCents) =>
+        request(server)
+          .post('/charges')
+          .set({ 'Idempotency-Key': key })
+          .send({ ...input, amountCents }),
+      ),
+    );
+    assert.deepEqual(
+      responses.map((response) => response.status).sort(),
+      [201, 409],
+    );
+    const stored = await database.query<{ count: number }>(
+      'SELECT count(*)::int AS count FROM payment_provider.charges WHERE idempotency_key = $1',
+      [key],
+    );
+    assert.equal(stored.rows[0]?.count, 1);
+  });
+
+  for (const key of [
+    '',
+    '_invalid',
+    'contains space',
+    'é',
+    'k'.repeat(129),
+    ['one', 'two'],
+  ]) {
+    void it(
+      'rejects malformed, oversized or duplicate Idempotency-Key: ' +
+        JSON.stringify(key),
+      async () => {
+        const count = await countCharges();
+        const response = await request(server)
+          .post('/charges')
+          .set({ 'Idempotency-Key': key })
+          .send({
+            merchantReference: randomUUID(),
+            amountCents: 100,
+            currency: 'BRL',
+          })
+          .expect(400);
+        assert.equal(
+          (response.body as Record<string, unknown>)['code'],
+          'INVALID_IDEMPOTENCY_KEY',
+        );
+        assert.equal(await countCharges(), count);
+      },
+    );
+  }
+
+  void it('accepts 1/128-character keys and keeps distinct keys independent for the same reference', async () => {
+    const input = {
+      merchantReference: randomUUID(),
+      amountCents: 100,
+      currency: 'BRL',
+    };
+    const responses = await Promise.all(
+      ['k', 'k'.repeat(128)].map((key) =>
+        request(server)
+          .post('/charges')
+          .set({ 'Idempotency-Key': key })
+          .send(input)
+          .expect(201),
+      ),
+    );
+    assert.notEqual(
+      parseCharge(responses[0]?.body).id,
+      parseCharge(responses[1]?.body).id,
+    );
+  });
+
+  void it('rolls back key and charge together when insertion fails; the key remains usable', async () => {
+    const key = randomUUID();
+    const input = {
+      merchantReference: randomUUID(),
+      amountCents: 100,
+      currency: 'BRL',
+    };
+    await database.query(
+      `CREATE FUNCTION payment_provider.reject_key_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Simulated keyed insert failure'; END; $$`,
+      [],
+    );
+    try {
+      await database.query(
+        'CREATE TRIGGER reject_key_test BEFORE INSERT ON payment_provider.charges FOR EACH ROW EXECUTE FUNCTION payment_provider.reject_key_test()',
+        [],
+      );
+      await request(server)
+        .post('/charges')
+        .set({ 'Idempotency-Key': key })
+        .send(input)
+        .expect(500);
+      const stored = await database.query<{ count: number }>(
+        'SELECT count(*)::int AS count FROM payment_provider.charges WHERE idempotency_key = $1',
+        [key],
+      );
+      assert.equal(stored.rows[0]?.count, 0);
+    } finally {
+      await database.query(
+        'DROP TRIGGER IF EXISTS reject_key_test ON payment_provider.charges',
+        [],
+      );
+      await database.query(
+        'DROP FUNCTION payment_provider.reject_key_test()',
+        [],
+      );
+    }
+    const response = await request(server)
+      .post('/charges')
+      .set({ 'Idempotency-Key': key })
+      .send(input)
+      .expect(201);
+    await request(server)
+      .post('/charges')
+      .set({ 'Idempotency-Key': key })
+      .send(input)
+      .expect(201)
+      .expect(parseCharge(response.body));
   });
 
   void it('lists only charges for the required reference and returns [] for an unknown reference', async () => {
@@ -521,6 +755,7 @@ void describe('Charges HTTP and PostgreSQL (isolated provider database)', () => 
       { column_name: 'currency', data_type: 'text' },
       { column_name: 'status', data_type: 'text' },
       { column_name: 'created_at', data_type: 'timestamp with time zone' },
+      { column_name: 'idempotency_key', data_type: 'text' },
     ]);
     const constraints = await database.query<{
       foreignKeys: number;

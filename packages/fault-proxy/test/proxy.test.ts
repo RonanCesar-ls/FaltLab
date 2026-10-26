@@ -158,6 +158,7 @@ void describe(
         body: requestBytes,
         headers: {
           'x-correlation-id': 'preserve-1',
+          'idempotency-key': 'logical-payment-1',
           connection: 'close, x-client-hop',
           'x-client-hop': 'removed',
         },
@@ -172,6 +173,7 @@ void describe(
       assert.equal(received.method, 'POST');
       assert.equal(received.path, '/echo?value=a%2Fb');
       assert.equal(received.headers['x-correlation-id'], 'preserve-1');
+      assert.equal(received.headers['idempotency-key'], 'logical-payment-1');
       assert.equal(received.headers['x-client-hop'], undefined);
       assert.equal(received.headers.host, new URL(providerUrl).host);
     });
@@ -181,10 +183,12 @@ void describe(
       const finish = deferred<void>();
       const completed = deferred<void>();
       const operations: string[] = [];
+      const forwardedKeys: unknown[] = [];
       let finished = false;
       const { url, logs } = await fixture(t, (req, res) => {
         void body(req).then((bytes) => {
           operations.push(bytes.toString());
+          forwardedKeys.push(req.headers['idempotency-key']);
           res.writeHead(201, {
             'content-type': 'application/json',
             'x-correlation-id': req.headers['x-correlation-id'],
@@ -205,7 +209,10 @@ void describe(
       let clientSettled = false;
       const result = exchange(url, '/charges', {
         body: Buffer.from('record-this-operation'),
-        headers: { 'x-correlation-id': 'payment-1' },
+        headers: {
+          'x-correlation-id': 'payment-1',
+          'idempotency-key': 'same-logical-payment',
+        },
         onResponse: () => {
           receivedHeaders = true;
         },
@@ -240,12 +247,19 @@ void describe(
       );
       assert.equal(receivedHeaders, false);
       const next = await exchange(url, '/charges', {
-        headers: { 'x-correlation-id': 'payment-2' },
+        headers: {
+          'x-correlation-id': 'payment-2',
+          'idempotency-key': 'same-logical-payment',
+        },
       });
       assert.equal(next.status, 201);
       assert.equal(next.body.toString(), '{"status":"SUCCEEDED"}');
       assert.equal(next.headers['x-correlation-id'], 'payment-2');
       assert.equal(operations.length, 2);
+      assert.deepEqual(forwardedKeys, [
+        'same-logical-payment',
+        'same-logical-payment',
+      ]);
       assert.deepEqual(
         logs
           .filter((entry) => entry['event'] === 'fault.armed')

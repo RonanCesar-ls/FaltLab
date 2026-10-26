@@ -16,7 +16,10 @@ export interface PaymentConfirmation extends PaymentRequest {
 }
 
 export interface PaymentGateway {
-  createCharge(request: PaymentRequest): Promise<PaymentConfirmation>;
+  createCharge(
+    request: PaymentRequest,
+    idempotencyKey: string,
+  ): Promise<PaymentConfirmation>;
 }
 
 export type PaymentGatewayFailure =

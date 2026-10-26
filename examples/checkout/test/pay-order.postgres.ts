@@ -11,6 +11,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { DatabaseService } from '../src/database.service';
 import type { OrderResponseDto } from '../src/orders/dto/order-response.dto';
+import { OrdersRepository } from '../src/orders/orders.repository';
 
 void describe('Pay order over HTTP with real PostgreSQL', () => {
   let app: INestApplication;
@@ -27,6 +28,7 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
   let calls: unknown[] = [];
   let chargeIds: string[] = [];
   let correlationIds: unknown[] = [];
+  let idempotencyKeys: unknown[] = [];
   const provider = createServer((incoming, response) => {
     const chunks: Buffer[] = [];
     incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -34,6 +36,8 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       calls.push(body);
       correlationIds.push(incoming.headers['x-correlation-id']);
+      idempotencyKeys.push(incoming.headers['idempotency-key']);
+      assert.equal(typeof incoming.headers['idempotency-key'], 'string');
       assert.equal(incoming.method, 'POST');
       assert.equal(incoming.url, '/charges');
       if (mode === 'unavailable') {
@@ -99,6 +103,7 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     calls = [];
     chargeIds = [];
     correlationIds = [];
+    idempotencyKeys = [];
   });
   after(async () => {
     await app?.close();
@@ -116,6 +121,25 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     return response.body as OrderResponseDto;
   }
 
+  void it('allocates exactly one persisted operation key under concurrent preparation', async () => {
+    const order = await create();
+    const repository = app.get(OrdersRepository);
+    const keys = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        repository.getOrCreatePaymentKey(order.id),
+      ),
+    );
+    assert.equal(new Set(keys).size, 1);
+    assert.match(keys[0] ?? '', /^[0-9a-f-]{36}$/);
+    assert.equal(calls.length, 0);
+    const row = await database.query<{ key: string; status: string }>(
+      'SELECT payment_idempotency_key AS key, status FROM checkout.orders WHERE id = $1::uuid',
+      [order.id],
+    );
+    assert.deepEqual(row.rows, [{ key: keys[0], status: 'PENDING_PAYMENT' }]);
+    assert.equal(await repository.getOrCreatePaymentKey(order.id), keys[0]);
+  });
+
   void it('charges using persisted data and atomically stores PAID plus the confirmed charge ID', async () => {
     const order = await create();
     const response = await request(server)
@@ -124,6 +148,12 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
       .expect(200);
     assert.equal(response.headers['x-correlation-id'], 'pay-postgres-1');
     assert.deepEqual(correlationIds, ['pay-postgres-1']);
+    const prepared = await database.query<{ key: string }>(
+      'SELECT payment_idempotency_key AS key FROM checkout.orders WHERE id = $1::uuid',
+      [order.id],
+    );
+    assert.deepEqual(idempotencyKeys, [prepared.rows[0]?.key]);
+    assert.notEqual(prepared.rows[0]?.key, 'pay-postgres-1');
     const paid = response.body as OrderResponseDto;
     assert.deepEqual(calls, [
       {
@@ -237,7 +267,7 @@ void describe('Pay order over HTTP with real PostgreSQL', () => {
     const order = await create();
     await database.query(
       `CREATE FUNCTION checkout.reject_paid_test() RETURNS trigger LANGUAGE plpgsql
-      AS $$ BEGIN RAISE EXCEPTION 'Simulated local confirmation write failure'; END; $$`,
+      AS $$ BEGIN IF NEW.status = 'PAID' THEN RAISE EXCEPTION 'Simulated local confirmation write failure'; END IF; RETURN NEW; END; $$`,
       [],
     );
     try {

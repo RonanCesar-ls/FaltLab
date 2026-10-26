@@ -8,6 +8,7 @@ import type { PaymentRequest } from '../src/payments/payment-gateway';
 import { PaymentGatewayError } from '../src/payments/payment-gateway';
 import { RequestContext } from '../src/observability/request-context';
 
+const paymentKey = randomUUID();
 const payment: PaymentRequest = {
   merchantReference: randomUUID(),
   amountCents: 12990,
@@ -29,6 +30,7 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
     path: string | undefined;
     body: unknown;
     correlationId: string | undefined;
+    idempotencyKey: string | undefined;
   }> = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -36,6 +38,8 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
     request.on('end', () => {
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       calls.push({
+        idempotencyKey: request.headers['idempotency-key'] as
+          string | undefined,
         method: request.method,
         path: request.url,
         body,
@@ -74,7 +78,7 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
     timeoutMs = 2000,
   ): Promise<void> {
     await assert.rejects(
-      gateway(timeoutMs).createCharge(payment),
+      gateway(timeoutMs).createCharge(payment, paymentKey),
       (error: unknown) =>
         error instanceof PaymentGatewayError && error.kind === kind,
     );
@@ -84,7 +88,7 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
   void it('POSTs only the persisted identity, amount and currency and validates the confirmation', async () => {
     assert.deepEqual(
       await context.run('gateway-test-1', () =>
-        gateway().createCharge(payment),
+        gateway().createCharge(payment, paymentKey),
       ),
       valid,
     );
@@ -94,11 +98,12 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
         path: '/api/charges',
         body: payment,
         correlationId: 'gateway-test-1',
+        idempotencyKey: paymentKey,
       },
     ]);
   });
   void it('generates an outbound UUID when called outside an incoming request', async () => {
-    await gateway().createCharge(payment);
+    await gateway().createCharge(payment, paymentKey);
     assert.match(calls[0]?.correlationId ?? '', /^[0-9a-f-]{36}$/);
     assert.equal(context.getId(), undefined);
   });
@@ -109,7 +114,9 @@ void describe('HTTP payment gateway with a real HTTP server', () => {
     );
     const adapter = gateway();
     await Promise.all(
-      ids.map((id) => context.run(id, () => adapter.createCharge(payment))),
+      ids.map((id) =>
+        context.run(id, () => adapter.createCharge(payment, paymentKey)),
+      ),
     );
     assert.deepEqual(
       new Set(calls.map((call) => call.correlationId)),

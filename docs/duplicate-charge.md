@@ -80,9 +80,10 @@ state-changing requests.
 | violated     | 1    | Final provider evidence contains more than one SUCCEEDED charge                       |
 | inconclusive | 2    | Preparation, infrastructure, validation, cancellation or storage prevented completion |
 
-Current services are expected to expose one charge while pending, then a second
-charge and a PAID order. A detected violation is a valid experiment result.
-pnpm may print ELIFECYCLE for the intentional exit 1; use
+The baseline was reproduced with two charges and exit 1. After the
+[persistent idempotency correction](idempotency.md), the same steps should retain
+one charge while pending and then confirm PAID using that original charge, exiting 0.
+A detected violation remains a valid experiment result. pnpm may print ELIFECYCLE for exit 1; use
 `node packages/cli/dist/main.js duplicate-charge` to avoid wrapper output.
 In PowerShell, capture $LASTEXITCODE immediately after invoking the command.
 
@@ -136,13 +137,15 @@ declarations are available on a fresh checkout.
 
 pnpm test:scenario provisions real checkout/provider/proxy containers and two real
 PostgreSQL instances in an isolated random Compose project, with tmpfs data and
-random loopback ports. It runs the actual CLI twice, accepts the expected exit 1
+random loopback ports. It runs the actual CLI twice, requires the expected exit 0
 and independently compares reported records with provider SQL persistence. Both
-order/run IDs must be unique. Expected duplicate detection makes the test pass.
+order/run IDs must be unique. Both snapshots must contain the same original charge.
+It also checks concurrent payments and a real checkout restart between attempts.
+Controlled executor/scenario tests still validate two-charge violations and exit 1.
 Cleanup removes only that project's resources and preserves development volumes.
 Reports/logs remain in Git-ignored tests/e2e/artifacts. The existing pnpm test:e2e
 is a direct-path regression suite. CI runs both. Missing Docker explicitly fails
 Docker-dependent commands.
 
-No replay, random generation, shrinking, concurrent scheduler, distributed
-idempotency or automatic recovery is implemented.
+No replay, random generation, shrinking, concurrent scheduler or automatic
+recovery is implemented. Keyed payment idempotency is described separately.

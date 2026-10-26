@@ -10,6 +10,10 @@ import {
 } from './request-context';
 
 const publicErrors = {
+  PAYMENT_PREPARATION_FAILED: {
+    status: 503,
+    message: 'Payment operation could not be prepared.',
+  },
   INVALID_CORRELATION_ID: {
     status: 400,
     message:

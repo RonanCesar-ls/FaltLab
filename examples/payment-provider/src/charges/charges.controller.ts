@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Post,
@@ -12,6 +13,7 @@ import { ChargesValidationPipe } from './charges-validation.pipe';
 import { ChargeResponseDto } from './dto/charge-response.dto';
 import { CreateChargeDto } from './dto/create-charge.dto';
 import { ListChargesDto } from './dto/list-charges.dto';
+import { IdempotencyKeyPipe } from './idempotency-key.pipe';
 
 @Controller('charges')
 export class ChargesController {
@@ -27,8 +29,12 @@ export class ChargesController {
       ]),
     )
     input: CreateChargeDto,
+    @Headers('idempotency-key') idempotencyHeader: unknown,
   ): Promise<ChargeResponseDto> {
-    return this.charges.create(input);
+    return this.charges.create(
+      input,
+      new IdempotencyKeyPipe().transform(idempotencyHeader),
+    );
   }
 
   @Get()

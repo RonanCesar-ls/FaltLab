@@ -3,8 +3,9 @@
 Default origins are http://localhost:3001 (checkout) and http://localhost:3002
 (provider). Requests and responses use JSON. Dates are ISO 8601 UTC strings backed
 by timestamptz columns. Amounts are integer cents, from 1 through 2147483647.
-Numeric strings, fractions, missing/null required values, unknown properties and
-currencies other than the exact string BRL are rejected with HTTP 400.
+Numeric strings, fractions, missing/null required values and unknown properties
+are rejected with HTTP 400. New charges/orders must use BRL. A different currency
+on an existing idempotency key is a 409 conflict, as described below.
 
 ## Checkout
 
@@ -46,8 +47,11 @@ updated order (PAID, non-null providerChargeId, updated updatedAt).
 
 A missing order returns 404; a malformed UUID returns 400. An already-paid order
 returns its existing state, without another charge, on sequential calls. A valid
-provider confirmation is required before the local payment update. This is not a
-distributed transaction or concurrency-safe idempotency protocol.
+provider confirmation is required before the local payment update. Checkout first
+persists one stable operation UUID and sends it as Idempotency-Key on every
+attempt, including concurrent calls and calls after process restart. It does not
+accept a client-supplied key in the pay body. Correlation IDs remain per request.
+This is not a distributed transaction; see the [idempotency protocol](idempotency.md).
 
 | Failure                                               | HTTP | code                               |
 | ----------------------------------------------------- | ---- | ---------------------------------- |
@@ -56,11 +60,12 @@ distributed transaction or concurrency-safe idempotency protocol.
 | Invalid JSON, fields, matching data or success status | 502  | PAYMENT_PROVIDER_INVALID_RESPONSE  |
 | Non-success provider HTTP, including redirects        | 502  | PAYMENT_PROVIDER_HTTP_ERROR        |
 | Saving a valid confirmation fails                     | 503  | PAYMENT_CONFIRMATION_NOT_PERSISTED |
+| Persisting the operation key fails before HTTP        | 503  | PAYMENT_PREPARATION_FAILED         |
 
 A provider failure does not write local payment state. It may still have
-registered a charge before confirmation was lost. Subsequent attempts can create
-another charge. Concurrent requests can charge twice. No retries, distributed
-idempotency, compensation or reconciliation are implemented.
+registered a charge before confirmation was lost. A later attempt reuses its
+persisted key and recovers that charge. No automatic retries, compensation or
+reconciliation are implemented. Legacy unkeyed history is not retroactively repaired.
 
 ## Payment provider
 
@@ -93,7 +98,17 @@ Returns 201 only after PostgreSQL confirms persistence:
 
 merchantReference must be a UUID but is an external reference. There is no foreign
 key or uniqueness constraint, order lookup, checkout SQL access or deduplication.
-Each valid request, including an identical repeat, creates an independent charge.
+Without Idempotency-Key, each valid request creates an independent legacy charge.
+With a valid key, matching repeats return the original charge (HTTP 201, same
+ID/data/createdAt), including concurrent requests. The key is persisted with the
+charge under a unique constraint and a transaction-level PostgreSQL lock. Reusing
+the key with different reference, amount or currency returns 409 /
+IDEMPOTENCY_KEY_CONFLICT. Keys are case-sensitive ASCII identifiers matching
+`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$` (1..128 characters); malformed, empty,
+duplicate or oversized headers return 400 / INVALID_IDEMPOTENCY_KEY. Existing
+NULL-key charges are preserved. Keys are not exposed in the response body.
+Structural body validation remains strict. A new non-BRL charge is rejected with
+400; reusing an existing key with a different currency such as USD returns 409.
 The ID, SUCCEEDED status and timestamp are controlled by the provider. A direct
 POST /charges does not update any order. There is no real payment processing.
 
@@ -153,6 +168,8 @@ correlation. The common codes are:
 | HTTP        | Codes                                                        |
 | ----------- | ------------------------------------------------------------ |
 | 400         | BAD_REQUEST, INVALID_CORRELATION_ID                          |
+| 400         | INVALID_IDEMPOTENCY_KEY (provider)                           |
+| 409         | IDEMPOTENCY_KEY_CONFLICT (provider)                          |
 | 404         | NOT_FOUND (unknown route), ORDER_NOT_FOUND, CHARGE_NOT_FOUND |
 | 413         | PAYLOAD_TOO_LARGE                                            |
 | 500         | INTERNAL_SERVER_ERROR                                        |

@@ -44,6 +44,16 @@ export class OrdersService {
     if (!order) throw new NotFoundException({ code: 'ORDER_NOT_FOUND' });
     if (order.status === 'PAID') return new OrderResponseDto(order);
 
+    let idempotencyKey: string;
+    try {
+      // The statement commits before any HTTP side effect; never regenerate on a communication failure.
+      idempotencyKey = await this.repository.getOrCreatePaymentKey(order.id);
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'PAYMENT_PREPARATION_FAILED',
+      });
+    }
+
     const request: PaymentRequest = {
       merchantReference: order.id,
       amountCents: order.amountCents,
@@ -51,7 +61,10 @@ export class OrdersService {
     };
     let providerChargeId: string;
     try {
-      const confirmation = await this.paymentGateway.createCharge(request);
+      const confirmation = await this.paymentGateway.createCharge(
+        request,
+        idempotencyKey,
+      );
       if (!isPaymentConfirmation(confirmation, request))
         throw new PaymentGatewayError('invalid_response');
       providerChargeId = confirmation.id;

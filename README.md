@@ -108,8 +108,9 @@ pnpm faultlab duplicate-charge
 Each run creates its own order. The CLI records the lost response, queries the
 provider's charges, submits the second payment and evaluates at most one SUCCEEDED
 charge. Reports are saved in reports/duplicate-charge/<runId>.json (Git-ignored).
-Exit codes: 0 satisfied, 1 violated, 2 inconclusive. A detected duplicate is an
-expected result with the current services, not a CLI crash. No data is deleted.
+Exit codes: 0 satisfied, 1 violated, 2 inconclusive. Persistent idempotency now
+keeps the original charge on retry, so the current services should exit 0.
+The executor still detects duplicate evidence as a violation. No data is deleted.
 See the guide for exact startup, configuration, report fields and limitations.
 
 ## Checks and tests
@@ -140,7 +141,7 @@ pnpm test:scenario
 | pnpm test:orders                        | Real checkout PostgreSQL, order/payment HTTP tests, migration down/up                                                | Yes                          |
 | pnpm test:charges                       | Real provider PostgreSQL, charge HTTP/SQL tests, migration down/up                                                   | Yes                          |
 | pnpm test:e2e                           | Build/run both services over HTTP, two real databases, direct provider SQL assertions, outage and correlation checks | Yes                          |
-| pnpm test:scenario                      | Real duplicate-charge CLI runs, expected violation and independent provider SQL evidence                             | Yes                          |
+| pnpm test:scenario                      | Real idempotent scenario, checkout restart/concurrency and independent provider SQL evidence                         | Yes                          |
 | pnpm docker:config                      | Validate development Compose using example values                                                                    | No daemon required           |
 | pnpm test:integration                   | Existing infrastructure checks against configured service databases                                                  | Running configured databases |
 
@@ -173,8 +174,8 @@ A missing Docker daemon fails the Docker-dependent command; tests are not skippe
 .github/workflows/ci.yml runs on main pushes, pull requests and manual dispatch.
 It uses Node.js 24 and pinned pnpm, installs with --frozen-lockfile, then checks
 formatting, lint, types, build, unit/component tests, PostgreSQL suites and E2E.
-The duplicate-charge integration suite treats the expected rule violation as a
-successful test only after checking the persisted provider records independently.
+The duplicate-charge integration suite verifies one retained charge and exit 0
+against provider SQL; controlled tests preserve detection of violated rules.
 GitHub-hosted Ubuntu supplies Docker; no development credentials or external
 payment service are needed. Actions are pinned by commit SHA and permissions are
 read-only. E2E diagnostics are uploaded with a seven-day retention period.
@@ -186,13 +187,17 @@ Already-paid orders are reused on sequential calls. Invalid requests and provide
 failures do not write local payment state. Correlation is isolated per request;
 errors and JSON logs exclude SQL, stack traces and credentials.
 
-These are not exactly-once payment guarantees. The provider may record a charge
-before a timeout or lost response; checkout can remain pending. Local database
-acknowledgement loss can also be ambiguous. A later payment attempt may create a
-second charge. Concurrent requests can both observe pending and charge twice.
-There are no retries, distributed idempotency, cross-service transactions,
-compensation or automatic reconciliation. This is a local demonstrator without
-authentication, real money movement or production deployment guarantees.
+Checkout persists one operation key per order before HTTP and reuses it on retry,
+restart and concurrent calls. The provider stores that key atomically with the
+charge, enforces uniqueness and returns the original charge for matching retries.
+Reusing a key with different parameters returns 409. See the
+[idempotency protocol, migration order and limits](docs/idempotency.md).
+
+A charge may still coexist with a pending order after a lost response until the
+caller retries. Legacy requests without a key and distinct keys remain independent;
+historical unkeyed charges cannot be retroactively deduplicated. There are no
+automatic retries, cross-service transactions, compensation or reconciliation.
+This is a local demonstrator without authentication, real money or production guarantees.
 
 ## Documentation and components
 
@@ -200,8 +205,10 @@ authentication, real money movement or production deployment guarantees.
 - [HTTP API, validation, environment and error codes](docs/http-api.md)
 - [Optional fault proxy: configuration and manual payment experiment](docs/fault-proxy.md)
 - [Duplicate-charge scenario: prerequisites, command, evidence and exit codes](docs/duplicate-charge.md)
+- [Persistent payment idempotency: correction, guarantees and limitations](docs/idempotency.md)
+- [ADR 0002: persistent operation keys](docs/adr/0002-persistent-payment-idempotency.md)
 - [ADR 0001: independent services and databases](docs/adr/0001-independent-services-and-databases.md)
 
 packages/core contains the generic sequential executor, scenarios contains the
 HTTP-only duplicate-charge definition, and packages/cli provides its terminal
-command. Replay, random generation, shrinking and idempotency fixes are deferred.
+command. Replay, random generation and shrinking are deferred.

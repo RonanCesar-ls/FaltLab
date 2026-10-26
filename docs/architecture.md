@@ -19,7 +19,7 @@ flowchart LR
 - Checkout owns orders. Its orders module separates controller/DTO validation,
   service use cases and a parameterized pg repository.
 - The provider owns charges. Its charges module has the same layers and always
-  creates a new SUCCEEDED fictitious charge for a valid request.
+  creates or recovers a SUCCEEDED fictitious charge by a persisted idempotency key.
 - PaymentGateway is checkout's port for creating a charge. PAYMENT_GATEWAY and
   PAYMENT_HTTP_CLIENT are injection tokens; HttpPaymentGateway implements the
   HTTP contract without importing provider source or accessing provider SQL.
@@ -39,7 +39,8 @@ SQL access from the E2E test is an assertion mechanism, not an application path.
 
 1. Checkout reads the persisted order. Missing orders return 404.
 2. If PAID, it returns the stored state without another provider call or update.
-3. If pending, it POSTs the persisted ID, amount and currency to /charges.
+3. If pending, it atomically persists/reuses an operation UUID, then POSTs the
+   ID, amount and currency to /charges with that Idempotency-Key header.
 4. It validates HTTP 201, JSON, a charge UUID, matching reference/amount/currency,
    SUCCEEDED status and a valid timestamp under a finite HTTP deadline.
 5. After a valid confirmation, one SQL UPDATE writes PAID, providerChargeId and
@@ -50,12 +51,17 @@ No PostgreSQL transaction spans the HTTP operation. No application retries or
 redirect following are enabled. A failed provider exchange does not update the
 pending order. A local SQL statement failure rolls back its update atomically.
 
-These statements do not guarantee one charge under every failure. A provider can
-commit before its response is lost. A database can also commit before an
-acknowledgement is lost. A retry by a caller can create another charge. Two
-concurrent pending-order requests can charge twice; the last local update can
-retain only one charge ID. There is no distributed idempotency, distributed
-transaction, compensation or automatic reconciliation in this version.
+The provider commits the key and charge in one row. A unique constraint plus a
+transaction-level advisory lock serializes keyed requests across processes;
+matching repeats return the original row, and conflicting parameters return 409.
+Checkout's key is durable before HTTP, so concurrent attempts and restarts recover
+the same charge. An already-paid order cannot be overwritten by a different charge.
+
+A provider can still commit before its response is lost, leaving checkout pending
+until a caller retries. There is no distributed transaction, compensation or
+automatic reconciliation. Legacy no-key requests and distinct keys remain
+independent; historical unkeyed ambiguity is not repaired. See
+[persistent idempotency](idempotency.md) and ADR 0002 for migration/retention limits.
 
 ## Runtime topology and lifecycle
 
@@ -157,6 +163,6 @@ exclusive payment traffic because the proxy's fault is global. A rule violation
 is a completed experiment; preparation/infrastructure errors are inconclusive.
 
 There is no authentication/authorization, real money movement, distributed
-idempotency, concurrency-safe payment protocol, automatic reconciliation,
-production secret/role management, replay, random generation or shrinking. Those
+transactions, automatic reconciliation, production secret/role management,
+replay, random generation or shrinking. Those
 are not implied by a passing sequential happy-path E2E test.

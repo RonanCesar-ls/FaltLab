@@ -66,6 +66,44 @@ async function verifyMigration(env, exists) {
   }
 }
 
+async function verifyCompatibleUpgrade(env, migrate) {
+  migrate('down');
+  const client = new Client({
+    host: env.PGHOST,
+    port: Number(env.PGPORT),
+    database: env.PGDATABASE,
+    user: env.PGUSER,
+    password: env.PGPASSWORD,
+    connectionTimeoutMillis: 2000,
+  });
+  try {
+    await client.connect();
+    const id = randomUUID();
+    await client.query(
+      `INSERT INTO payment_provider.charges (id, merchant_reference, amount_cents, currency) VALUES ($1::uuid, $2::uuid, 100, 'BRL')`,
+      [id, randomUUID()],
+    );
+    const before = await client.query(
+      'SELECT * FROM payment_provider.charges WHERE id = $1::uuid',
+      [id],
+    );
+    migrate('up');
+    const after = await client.query(
+      'SELECT * FROM payment_provider.charges WHERE id = $1::uuid',
+      [id],
+    );
+    assert.deepEqual(
+      after.rows.map(({ idempotency_key: key, ...row }) => {
+        assert.equal(key, null);
+        return row;
+      }),
+      before.rows,
+    );
+  } finally {
+    await client.end();
+  }
+}
+
 try {
   compose([
     'up',
@@ -92,6 +130,7 @@ try {
   const migrate = (direction) =>
     node(['--require', 'ts-node/register', 'src/migrate.ts', direction], env);
   migrate('up');
+  await verifyCompatibleUpgrade(env, migrate);
   await verifyMigration(env, true);
   node(
     [
@@ -102,6 +141,8 @@ try {
     env,
   );
   // The test data is disposable. Exercise rollback and reapplication on this database only.
+  migrate('down');
+  await verifyMigration(env, true); // Charge rows survive dropping only the new key.
   migrate('down');
   await verifyMigration(env, false);
   migrate('up');

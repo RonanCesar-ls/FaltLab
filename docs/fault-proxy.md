@@ -129,11 +129,18 @@ WHERE merchant_reference = '$($order.id)'::uuid;
 "@ | docker compose exec -T payment-provider-db psql -U payment_provider_app -d payment_provider
 ```
 
-The fault has now been consumed. A **fresh order** can be created and paid through
-the same proxy without rearming; it follows the normal PAID flow. Do not retry
-the original payment as a verification step: another request for that still-
-pending order can create a second charge. This delivery deliberately preserves
-that behavior and performs no retries or automatic exploration.
+The fault has now been consumed. With persistent idempotency, retrying the original
+payment recovers the same charge and confirms PAID without another provider row:
+
+```powershell
+$paid = Invoke-RestMethod -TimeoutSec 5 -Method Post -Uri "$checkout/orders/$($order.id)/pay"
+$after = @(Invoke-RestMethod -TimeoutSec 5 -Uri "$provider/charges?merchantReference=$($order.id)")
+if ($paid.status -ne 'PAID' -or $after.Count -ne 1 -or $paid.providerChargeId -ne $charges[0].id -or $after[0].id -ne $charges[0].id) { throw 'Expected recovery of the original charge.' }
+```
+
+The pre-fix implementation created a second charge here. See the
+[correction and migration prerequisites](idempotency.md). A fresh order can also
+be paid normally without rearming. No automatic retry or exploration is performed.
 
 ## Restore the direct path and run checks
 

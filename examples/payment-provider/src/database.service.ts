@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
-import type { QueryResult, QueryResultRow } from 'pg';
+import type { PoolClient, QueryResult, QueryResultRow } from 'pg';
 import type { Environment } from './environment';
 
 export const DATABASE_POOL = Symbol('DATABASE_POOL');
@@ -29,6 +29,26 @@ export class DatabaseService implements OnApplicationShutdown {
     );
     if (result.rows[0]?.ready !== true) {
       throw new Error('Unexpected PostgreSQL connection identity.');
+    }
+  }
+
+  async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    let discard = false;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        discard = true;
+      }
+      throw error;
+    } finally {
+      client.release(discard);
     }
   }
 

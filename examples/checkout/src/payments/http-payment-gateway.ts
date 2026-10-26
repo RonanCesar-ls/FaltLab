@@ -29,7 +29,10 @@ export class HttpPaymentGateway implements PaymentGateway {
     );
   }
 
-  async createCharge(request: PaymentRequest): Promise<PaymentConfirmation> {
+  async createCharge(
+    request: PaymentRequest,
+    idempotencyKey: string,
+  ): Promise<PaymentConfirmation> {
     const signal = AbortSignal.timeout(this.options.timeoutMs);
     try {
       const response = await this.http(this.chargesUrl, {
@@ -37,6 +40,7 @@ export class HttpPaymentGateway implements PaymentGateway {
         headers: {
           'content-type': 'application/json',
           accept: 'application/json',
+          'idempotency-key': idempotencyKey,
           [CORRELATION_HEADER]: this.context.getId() ?? randomUUID(),
         },
         body: JSON.stringify(request),

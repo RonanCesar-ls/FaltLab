@@ -3,6 +3,9 @@
 - Status: Accepted
 - Date: 2026-10-25
 
+Historical baseline: the idempotency limitation below is addressed by
+[ADR 0002](0002-persistent-payment-idempotency.md). Service/database separation remains unchanged.
+
 ## Context
 
 FaultLab needs an observable failure boundary between an order state transition

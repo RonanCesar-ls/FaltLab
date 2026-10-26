@@ -24,6 +24,9 @@ void describe('Pay order use case through the PaymentGateway token', () => {
   let writes: number;
   let confirm: (request: PaymentRequest) => Promise<PaymentConfirmation>;
   let failWrite: boolean;
+  let failPrepare: boolean;
+  let paymentKey: string | undefined;
+  let keys: string[];
   beforeEach(async () => {
     order = {
       id: randomUUID(),
@@ -37,6 +40,9 @@ void describe('Pay order use case through the PaymentGateway token', () => {
     requests = [];
     writes = 0;
     failWrite = false;
+    failPrepare = false;
+    paymentKey = undefined;
+    keys = [];
     confirm = (request) =>
       Promise.resolve({
         ...request,
@@ -45,7 +51,8 @@ void describe('Pay order use case through the PaymentGateway token', () => {
         createdAt: new Date().toISOString(),
       });
     const gateway: PaymentGateway = {
-      createCharge: (request) => {
+      createCharge: (request, key) => {
+        keys.push(key);
         requests.push(request);
         return confirm(request);
       },
@@ -57,6 +64,12 @@ void describe('Pay order use case through the PaymentGateway token', () => {
         {
           provide: OrdersRepository,
           useValue: {
+            getOrCreatePaymentKey: (): Promise<string> => {
+              if (failPrepare)
+                return Promise.reject(new Error('Private database failure.'));
+              paymentKey ??= randomUUID();
+              return Promise.resolve(paymentKey);
+            },
             findById: (): Promise<Order | null> =>
               Promise.resolve(structuredClone(order)),
             markPaid: (_id: string, chargeId: string): Promise<Order> => {
@@ -99,6 +112,30 @@ void describe('Pay order use case through the PaymentGateway token', () => {
     assert.equal(result.amountCents, original.amountCents);
     assert.equal(result.createdAt, original.createdAt.toISOString());
     assert.equal(writes, 1);
+    assert.deepEqual(keys, [paymentKey]);
+    assert.match(paymentKey ?? '', /^[0-9a-f-]{36}$/);
+  });
+  void it('does not contact the provider when persisting the operation key fails', async () => {
+    assert.ok(order);
+    failPrepare = true;
+    await assert.rejects(
+      service.pay(order.id),
+      (error: unknown) =>
+        error instanceof HttpException && error.getStatus() === 503,
+    );
+    assert.equal(requests.length, 0);
+    assert.equal(order.status, 'PENDING_PAYMENT');
+  });
+  void it('reuses the prepared key after a communication error', async () => {
+    assert.ok(order);
+    const valid = confirm;
+    confirm = () => Promise.reject(new PaymentGatewayError('unavailable'));
+    await assert.rejects(service.pay(order.id));
+    const persisted = paymentKey;
+    confirm = valid;
+    const paid = await service.pay(order.id);
+    assert.equal(paid.status, 'PAID');
+    assert.deepEqual(keys, [persisted, persisted]);
   });
   void it('reuses a paid order on sequential calls without another provider request or write', async () => {
     assert.ok(order);

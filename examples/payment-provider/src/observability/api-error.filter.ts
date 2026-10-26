@@ -10,6 +10,15 @@ import {
 } from './request-context';
 
 const publicErrors = {
+  INVALID_IDEMPOTENCY_KEY: {
+    status: 400,
+    message:
+      'Idempotency-Key must be one ASCII identifier of 1 to 128 characters.',
+  },
+  IDEMPOTENCY_KEY_CONFLICT: {
+    status: 409,
+    message: 'Idempotency key was already used with different parameters.',
+  },
   INVALID_CORRELATION_ID: {
     status: 400,
     message:
