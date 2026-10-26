@@ -125,6 +125,16 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
 
+  tests/e2e:
+    dependencies:
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+
 packages:
 
   '@borewit/text-codec@0.2.2':

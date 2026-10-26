@@ -1,0 +1,88 @@
+services:
+  checkout-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: faultlab_e2e_checkout
+      POSTGRES_USER: e2e_checkout
+      POSTGRES_PASSWORD: e2e_checkout_only
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks: [checkout-data]
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  provider-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: faultlab_e2e_payment_provider
+      POSTGRES_USER: e2e_payment_provider
+      POSTGRES_PASSWORD: e2e_payment_provider_only
+    ports: ['127.0.0.1::5432']
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks: [provider-data]
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  checkout:
+    build:
+      context: ../..
+      dockerfile: examples/checkout/Dockerfile
+    init: true
+    stop_grace_period: 10s
+    environment:
+      NODE_ENV: test
+      PORT: '3001'
+      PGHOST: checkout-db
+      PGPORT: '5432'
+      PGDATABASE: faultlab_e2e_checkout
+      PGUSER: e2e_checkout
+      PGPASSWORD: e2e_checkout_only
+      PAYMENT_PROVIDER_URL: http://payment-provider:3002
+      PAYMENT_PROVIDER_TIMEOUT_MS: '1000'
+    ports: ['127.0.0.1::3001']
+    networks: [checkout-data, payments]
+    depends_on:
+      checkout-db:
+        condition: service_healthy
+
+  payment-provider:
+    build:
+      context: ../..
+      dockerfile: examples/payment-provider/Dockerfile
+    init: true
+    stop_grace_period: 10s
+    environment:
+      NODE_ENV: test
+      PORT: '3002'
+      PGHOST: provider-db
+      PGPORT: '5432'
+      PGDATABASE: faultlab_e2e_payment_provider
+      PGUSER: e2e_payment_provider
+      PGPASSWORD: e2e_payment_provider_only
+    ports: ['127.0.0.1::3002']
+    networks: [provider-data, payments]
+    depends_on:
+      provider-db:
+        condition: service_healthy
+
+networks:
+  checkout-data:
+  provider-data:
+  payments:
